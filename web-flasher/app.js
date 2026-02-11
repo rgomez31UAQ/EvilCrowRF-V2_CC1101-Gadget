@@ -27,7 +27,7 @@ const DONATE_URL   = 'https://ko-fi.com/senape3000';
 
 // Set this to your Cloudflare Worker URL after deploying cors-proxy.js
 // Example: 'https://evilcrow-cors.yourname.workers.dev'
-const CORS_WORKER_URL = '';  // ← Set your worker URL here
+const CORS_WORKER_URL = 'https://evilcrow-cors.anx-hack.workers.dev/';  // ← Set your worker URL here
 
 // Fallback public CORS proxies (tried in order if worker is not set or fails)
 const CORS_PROXIES = [
@@ -436,3 +436,4 @@ document.addEventListener('DOMContentLoaded', () => {
   // Init
   init();
 });
+
