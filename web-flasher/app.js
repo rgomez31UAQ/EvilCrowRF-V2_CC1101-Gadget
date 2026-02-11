@@ -27,7 +27,7 @@ const DONATE_URL   = 'https://ko-fi.com/senape3000';
 
 // Set this to your Cloudflare Worker URL after deploying cors-proxy.js
 // Example: 'https://evilcrow-cors.yourname.workers.dev'
-const CORS_WORKER_URL = 'https://evilcrow-cors.anx-hack.workers.dev/';  // ← Set your worker URL here
+const CORS_WORKER_URL = 'https://evilcrow-cors.anx-hack.workers.dev';
 
 // Fallback public CORS proxies (tried in order if worker is not set or fails)
 const CORS_PROXIES = [
@@ -49,7 +49,8 @@ async function fetchViaCorsProxy(url) {
   // 2. Try Cloudflare Worker (most reliable, user-controlled)
   if (CORS_WORKER_URL) {
     try {
-      const workerUrl = `${CORS_WORKER_URL}/?url=${encodeURIComponent(url)}`;
+      const base = CORS_WORKER_URL.replace(/\/+$/, ''); // strip trailing slashes
+      const workerUrl = `${base}/?url=${encodeURIComponent(url)}`;
       const resp = await fetch(workerUrl);
       if (resp.ok) return { resp, method: 'Cloudflare Worker' };
     } catch (_) { /* worker unreachable, try public proxies */ }
@@ -436,4 +437,3 @@ document.addEventListener('DOMContentLoaded', () => {
   // Init
   init();
 });
-
