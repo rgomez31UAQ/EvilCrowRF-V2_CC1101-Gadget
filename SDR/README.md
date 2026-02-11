@@ -3,7 +3,7 @@
 
 # EvilCrow SDR — Quick Choices ⚡
 
-![screenshot](docs/media/img/sdr_launcher.PNG)
+![screenshot](https://github.com/Senape3000/EvilCrowRF-V2/blob/main/docs/media/img/sdr_launcher.PNG?raw=true)
   ***
 
 If you don't trust using a precompiled executable from some random person on the internet (and who could blame you? 😅), no worries — compile it yourself! Or be brave and use the ready-made EXE.
@@ -109,5 +109,6 @@ build_exe.bat
 - The builder can auto-install tools, but it will always ask for confirmation before installing.
 
   
+
 
 ***
