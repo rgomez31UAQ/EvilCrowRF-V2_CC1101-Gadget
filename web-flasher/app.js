@@ -1,13 +1,71 @@
 /* ============================================================
-   EvilCrow RF V2 — Web Flasher Application Logic
+   EvilCrow RF V2 (v1.1) — Web Flasher Application Logic
    Fetches releases from GitHub, builds ESP Web Tools manifest,
    handles changelog display and APK downloads.
+
+   CORS NOTE: GitHub does NOT send Access-Control-Allow-Origin
+   headers on release asset downloads — neither via
+   browser_download_url nor the API redirect target
+   (release-assets.githubusercontent.com).
+   See: https://github.com/esphome/esp-web-tools/issues/521
+   Solution: download firmware via a CORS proxy, convert to
+   a local Blob URL, and feed that to ESP Web Tools.
    ============================================================ */
 
 const GITHUB_REPO  = 'Senape3000/EvilCrowRF-V2';
 const GITHUB_API   = `https://api.github.com/repos/${GITHUB_REPO}/releases`;
 const GITHUB_URL   = `https://github.com/${GITHUB_REPO}`;
 const DONATE_URL   = 'https://ko-fi.com/senape3000';
+
+// ─── CORS proxy for GitHub release asset downloads ─────────────────
+// GitHub release downloads are blocked by CORS in browsers.
+// We use CORS proxy services to fetch them as blobs.
+//
+// RECOMMENDED: Deploy the Cloudflare Worker in cloudflare-worker/cors-proxy.js
+// (free, 100K req/day) and set CORS_WORKER_URL below.
+// Free public proxies are used as fallback but may be unreliable.
+
+// Set this to your Cloudflare Worker URL after deploying cors-proxy.js
+// Example: 'https://evilcrow-cors.yourname.workers.dev'
+const CORS_WORKER_URL = '';  // ← Set your worker URL here
+
+// Fallback public CORS proxies (tried in order if worker is not set or fails)
+const CORS_PROXIES = [
+  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+];
+
+/**
+ * Fetch a URL that is blocked by CORS, trying multiple proxy services.
+ * Returns { resp, method } on success, or throws on total failure.
+ */
+async function fetchViaCorsProxy(url) {
+  // 1. Try direct fetch (future-proof: if GitHub ever adds CORS)
+  try {
+    const resp = await fetch(url, { mode: 'cors' });
+    if (resp.ok) return { resp, method: 'direct' };
+  } catch (_) { /* expected: CORS block */ }
+
+  // 2. Try Cloudflare Worker (most reliable, user-controlled)
+  if (CORS_WORKER_URL) {
+    try {
+      const workerUrl = `${CORS_WORKER_URL}/?url=${encodeURIComponent(url)}`;
+      const resp = await fetch(workerUrl);
+      if (resp.ok) return { resp, method: 'Cloudflare Worker' };
+    } catch (_) { /* worker unreachable, try public proxies */ }
+  }
+
+  // 3. Try each public CORS proxy in order
+  for (let i = 0; i < CORS_PROXIES.length; i++) {
+    try {
+      const proxyUrl = CORS_PROXIES[i](url);
+      const resp = await fetch(proxyUrl);
+      if (resp.ok) return { resp, method: `proxy #${i + 1}` };
+    } catch (_) { /* try next */ }
+  }
+
+  throw new Error('All download methods failed (CORS proxies unreachable)');
+}
 
 // Firmware file naming: evilcrow-v2-fw-v{version}-full.bin
 const FW_FULL_RE   = /evilcrow-v2-fw-v[\d.]+-full\.bin$/i;
@@ -187,81 +245,62 @@ async function onVersionChange() {
 versionSelect.addEventListener('change', onVersionChange);
 
 // ─── Build ESP Web Tools manifest dynamically ──────────────────────
-// GitHub release download URLs (browser_download_url) don't support CORS.
-// We download the firmware binary via the GitHub API (which has CORS headers),
-// create a local Blob URL, and feed that to ESP Web Tools.
+// Download firmware binary via CORS proxy → Blob URL → ESP Web Tools.
+// The .bin file stays ONLY in the GitHub release; no copies elsewhere.
 async function buildManifest(asset) {
-  termLog(`  ↓ Downloading firmware via GitHub API...`, 'info');
+  termLog(`  ↓ Downloading firmware (${formatBytes(asset.size)})...`, 'info');
   setStatus('loading', 'Downloading firmware...');
 
+  let fwBlob = null;
+
   try {
-    // Use the GitHub API asset endpoint with octet-stream accept header.
-    // This redirects to a *.githubusercontent.com URL that has CORS headers.
-    const apiUrl = `https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${asset.id}`;
-    const resp = await fetch(apiUrl, {
-      headers: { 'Accept': 'application/octet-stream' }
-    });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status} downloading firmware`);
-
-    const fwBlob = await resp.blob();
-    const fwBlobUrl = URL.createObjectURL(fwBlob);
-
-    termLog(`  ✓ Firmware downloaded (${formatBytes(fwBlob.size)})`, 'success');
-
-    const manifest = {
-      name: 'EvilCrow RF V2',
-      version: selectedFw.tag_name || selectedFw.name || 'unknown',
-      funding_url: DONATE_URL,
-      new_install_prompt_erase: true,
-      builds: [
-        {
-          chipFamily: 'ESP32',
-          improv: false,
-          parts: [
-            { path: fwBlobUrl, offset: 0 }
-          ]
-        }
-      ]
-    };
-
-    const json = JSON.stringify(manifest);
-    const manifestBlob = new Blob([json], { type: 'application/json' });
-    const manifestUrl  = URL.createObjectURL(manifestBlob);
-
-    // Set manifest on the esp-web-install-button element
-    espInstallBtn.setAttribute('manifest', manifestUrl);
-    // Also set it directly in case the element reads the property
-    espInstallBtn.manifest = manifestUrl;
-
-    setStatus('online', 'Ready to flash');
+    // Download the firmware binary via CORS proxy
+    const { resp, method } = await fetchViaCorsProxy(asset.browser_download_url);
+    fwBlob = await resp.blob();
+    termLog(`  ✓ Firmware downloaded ${method} (${formatBytes(fwBlob.size)})`, 'success');
   } catch (err) {
     termLog(`  ✗ Firmware download failed: ${err.message}`, 'error');
-    termLog(`  Tip: Falling back to direct URL (may fail due to CORS)`, 'warn');
-    setStatus('error', 'Download failed — trying direct URL');
-
-    // Fallback: use browser_download_url directly (original behavior)
-    const manifest = {
-      name: 'EvilCrow RF V2',
-      version: selectedFw.tag_name || selectedFw.name || 'unknown',
-      funding_url: DONATE_URL,
-      new_install_prompt_erase: true,
-      builds: [
-        {
-          chipFamily: 'ESP32',
-          improv: false,
-          parts: [
-            { path: asset.browser_download_url, offset: 0 }
-          ]
-        }
-      ]
-    };
-
-    const json = JSON.stringify(manifest);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url  = URL.createObjectURL(blob);
-    espInstallBtn.setAttribute('manifest', url);
-    espInstallBtn.manifest = url;
+    termLog(`  → GitHub blocks CORS on release asset downloads.`, 'warn');
+    termLog(`  → Try refreshing or use a different browser.`, 'warn');
+    setStatus('error', 'Download failed');
+    try { espInstallBtn && espInstallBtn.setAttribute('disabled', ''); } catch (_) {}
+    return;
   }
+
+  // Validate: firmware blob should be > 100KB to be plausible
+  if (fwBlob.size < 102400) {
+    termLog(`  ⚠ Warning: firmware is only ${formatBytes(fwBlob.size)} — may be corrupt`, 'warn');
+  }
+
+  // Create local Blob URL for ESP Web Tools (same-origin, no CORS issues)
+  const fwBlobUrl = URL.createObjectURL(fwBlob);
+
+  const manifest = {
+    name: 'EvilCrow RF V2',
+    version: selectedFw.tag_name || selectedFw.name || 'unknown',
+    funding_url: DONATE_URL,
+    new_install_prompt_erase: true,
+    builds: [
+      {
+        chipFamily: 'ESP32',
+        improv: false,
+        parts: [
+          { path: fwBlobUrl, offset: 0 }
+        ]
+      }
+    ]
+  };
+
+  const json = JSON.stringify(manifest);
+  const manifestBlob = new Blob([json], { type: 'application/json' });
+  const manifestUrl  = URL.createObjectURL(manifestBlob);
+
+  // Set manifest on the esp-web-install-button element
+  espInstallBtn.setAttribute('manifest', manifestUrl);
+  espInstallBtn.manifest = manifestUrl;
+
+  setStatus('online', 'Ready to flash');
+  termLog(`  ✓ Manifest ready — click INSTALL to flash`, 'success');
 }
 
 // ─── APK download button ──────────────────────────────────────────
@@ -297,43 +336,21 @@ function populateApkButton() {
 async function renderChangelog() {
   if (!changelogPanel) return;
 
-  // Try to fetch changelog.json from the selected release assets
   let changelogData = null;
 
-  // First try: from the selected release's assets (via GitHub API to avoid CORS)
-  if (selectedFw) {
-    const clAsset = selectedFw.assets.find(a => a.name === 'changelog.json');
-    if (clAsset) {
-      try {
-        const apiUrl = `https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${clAsset.id}`;
-        const resp = await fetch(apiUrl, {
-          headers: { 'Accept': 'application/octet-stream' }
-        });
-        if (resp.ok) changelogData = await resp.json();
-      } catch (_) { /* ignore */ }
-    }
+  // Try to fetch changelog.json from release assets (via CORS proxy)
+  const releasesToCheck = selectedFw ? [selectedFw, ...allReleases] : allReleases;
+  for (const rel of releasesToCheck) {
+    const clAsset = rel.assets.find(a => a.name === 'changelog.json');
+    if (!clAsset) continue;
+    try {
+      const { resp } = await fetchViaCorsProxy(clAsset.browser_download_url);
+      changelogData = await resp.json();
+      break;
+    } catch (_) { /* CORS proxy failed, fall through to release body */ }
   }
 
-  // Fallback: from the latest release (via GitHub API to avoid CORS)
-  if (!changelogData && allReleases.length > 0) {
-    for (const rel of allReleases) {
-      const clAsset = rel.assets.find(a => a.name === 'changelog.json');
-      if (clAsset) {
-        try {
-          const apiUrl = `https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${clAsset.id}`;
-          const resp = await fetch(apiUrl, {
-            headers: { 'Accept': 'application/octet-stream' }
-          });
-          if (resp.ok) {
-            changelogData = await resp.json();
-            break;
-          }
-        } catch (_) { /* ignore */ }
-      }
-    }
-  }
-
-  // Fallback: use release body text
+  // Fallback: use release body text (already available from API, no CORS issue)
   if (!changelogData) {
     changelogPanel.innerHTML = '';
     fwReleases.forEach(rel => {
