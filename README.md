@@ -62,7 +62,7 @@ See `docs/` for detailed guides, attack-method documentation, and developer note
 
   
 
-Requirements: PlatformIO (for firmware), Flutter (for mobile app), Python 3.8+ (for SDR tools).
+Requirements: PlatformIO / PIOArduino (for firmware), Flutter (for mobile app), Python 3.8+ (for SDR tools).
 
   
 
@@ -72,7 +72,20 @@ Build firmware (PlatformIO):
 
 ```bash
 
-todo
+# Clone the repository
+git clone [repository-url]
+cd [repository-name]
+
+# Open the project folder in VSCode with PlatformIO extension installed
+# Wait for PlatformIO to complete the initial setup (dependencies, libraries, etc.)
+
+# Build the firmware
+pio run
+
+# Upload to device
+pio run --target upload
+
+#Or use the PlatformIO GUI in VSCode: click the "Build" button in the upper toolbar, then "Upload" once the build completes successfully.
 
 ```
 
