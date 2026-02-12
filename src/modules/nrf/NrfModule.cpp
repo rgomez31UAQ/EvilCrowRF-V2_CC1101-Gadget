@@ -149,12 +149,12 @@ void NrfModule::releaseSpi() {
     // Deselect NRF chip select
     digitalWrite(NRF_CSN, HIGH);
 
-    // End our SPI bus usage so CC1101 can re-initialize cleanly.
-    // NOTE: Do NOT call endTransaction() here — individual register
-    // read/write operations already manage their own transactions.
-    // Calling endTransaction() without a matching beginTransaction()
-    // corrupts the SPI driver state and breaks subsequent CC1101 use.
-    hspi_->end();
+    // NOTE: Do NOT call hspi_->end() here!
+    // That destroys the entire HSPI peripheral, which is shared with CC1101.
+    // The CC1101 CCSPI object re-calls begin() with its own pins on next use,
+    // but between the end() and that re-init there's a window where SPI is
+    // dead.  Simply deselecting CSN and releasing the mutex is sufficient —
+    // the CC1101 driver will reconfigure the bus on its next transaction.
 
     SemaphoreHandle_t mutex = ModuleCc1101::getSpiSemaphore();
     xSemaphoreGive(mutex);
@@ -384,6 +384,20 @@ bool NrfModule::transmit(const uint8_t* buf, uint8_t len) {
 
 void NrfModule::writeFast(const void* buf, uint8_t len) {
     if (len > 32) len = 32;
+
+    // Check TX FIFO status before writing.  If FIFO is full or MAX_RT flag
+    // is set, flush and clear to prevent silent packet drops.
+    uint8_t status = readRegister(NRF_REG_STATUS);
+    if (status & NRF_MASK_MAX_RT) {
+        // Max retransmits reached — clear flag and flush stale FIFO
+        writeRegister(NRF_REG_STATUS, NRF_MASK_MAX_RT);
+        flushTx();
+    }
+    // If TX FIFO full (bit 0 of STATUS), flush to make room
+    if (status & 0x01) {
+        flushTx();
+        writeRegister(NRF_REG_STATUS, NRF_MASK_TX_DS | NRF_MASK_MAX_RT);
+    }
 
     // Write TX payload
     beginTransaction();

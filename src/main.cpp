@@ -691,6 +691,7 @@ void setup()
     // Initialize nRF24L01 module (optional hardware)
 #if NRF_MODULE_ENABLED
     ESP_LOGI(TAG, "Initializing nRF24L01 module...");
+    NrfJammer::loadConfigs();  // Load per-mode jam settings from flash
     if (NrfModule::init()) {
         MouseJack::init();
         ESP_LOGI(TAG, "nRF24L01 + MouseJack initialized");

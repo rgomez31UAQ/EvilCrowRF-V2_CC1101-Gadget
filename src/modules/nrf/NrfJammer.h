@@ -40,9 +40,45 @@ struct NrfHopperConfig {
     uint8_t stepSize;      // 1-10
 };
 
+/// Total number of configurable jam modes (0-11)
+#define NRF_JAM_MODE_COUNT 12
+
+/**
+ * Per-mode jamming configuration.
+ * Each mode can have its own optimal RF parameters.
+ * Persisted in /nrf_jam_cfg.bin on LittleFS.
+ *
+ * The E01-ML01SP2 module (NRF24L01+ with PA+LNA) amplifies the
+ * NRF24L01+'s output (+20dBm max), so PA=3 (0dBm chip) becomes
+ * approximately +20dBm at the antenna.
+ */
+struct NrfJamModeConfig {
+    uint8_t  paLevel;       // 0-3 (0=MIN -18dBm, 3=MAX 0dBm → +20dBm with PA)
+    uint8_t  dataRate;      // 0=1Mbps, 1=2Mbps, 2=250Kbps
+    uint16_t dwellTimeMs;   // Time on each channel in ms (1-200)
+    uint8_t  useFlooding;   // 0=Constant Carrier (CW), 1=Data Flooding
+    uint8_t  floodBursts;   // Number of flood packets per channel hop (1-10)
+};
+
+/// Static info about a jammer mode (compiled into flash)
+struct NrfJamModeInfo {
+    const char*    name;          // Short display name
+    const char*    description;   // What this mode targets
+    const uint8_t* channels;      // Channel list (nullptr = special logic)
+    size_t         channelCount;  // Number of channels
+    uint16_t       freqStartMHz;  // Approximate start freq (for display)
+    uint16_t       freqEndMHz;    // Approximate end freq (for display)
+};
+
 /**
  * @class NrfJammer
- * @brief 2.4 GHz jammer with multiple mode presets.
+ * @brief 2.4 GHz jammer with multiple mode presets and per-mode tuning.
+ *
+ * Each of the 12 modes has independent RF parameters (PA, data rate,
+ * dwell time, CW vs flooding) that can be adjusted from the app and
+ * persisted in flash.  The dwell time is the key parameter for
+ * jamming effectiveness: too fast and the target escapes between hops,
+ * too slow and you miss FHSS channels.
  */
 class NrfJammer {
 public:
@@ -67,11 +103,15 @@ public:
      */
     static bool startHopper(const NrfHopperConfig& config);
 
-    /// Change jamming mode while running.
+    /// Change jamming mode while running (hot-swap).
     static bool setMode(NrfJamMode mode);
 
-    /// Change channel in single-channel mode.
+    /// Change channel live during single-channel jamming.
+    /// Called from BLE command 0x2D — takes effect on next loop iteration.
     static bool setChannel(uint8_t channel);
+
+    /// Update dwell time live during jamming (takes effect immediately).
+    static bool setDwellTime(uint16_t ms);
 
     /// Stop jamming.
     static void stop();
@@ -85,19 +125,48 @@ public:
     /// @return current channel (for single-channel mode).
     static uint8_t getCurrentChannel() { return currentChannel_; }
 
+    // ── Per-mode configuration ──────────────────────────────────
+
+    /// Get the current config for a specific mode.
+    static const NrfJamModeConfig& getModeConfig(NrfJamMode mode);
+
+    /// Update config for a specific mode and optionally persist.
+    static bool setModeConfig(NrfJamMode mode, const NrfJamModeConfig& cfg, bool persist = true);
+
+    /// Get static info (name, description, channels) for a mode.
+    static const NrfJamModeInfo& getModeInfo(NrfJamMode mode);
+
+    /// Load all per-mode configs from flash (called at boot).
+    static void loadConfigs();
+
+    /// Save all per-mode configs to flash.
+    static bool saveConfigs();
+
+    /// Reset all per-mode configs to optimal defaults.
+    static void resetToDefaults();
+
 private:
     static volatile bool running_;
     static volatile bool stopRequest_;
     static TaskHandle_t  taskHandle_;
     static NrfJamMode    currentMode_;
-    static uint8_t       currentChannel_;
+    static volatile uint8_t currentChannel_;
     static NrfHopperConfig hopperConfig_;
+
+    /// Per-mode configuration array (index = NrfJamMode enum value)
+    static NrfJamModeConfig modeConfigs_[NRF_JAM_MODE_COUNT];
 
     /// Background jamming task.
     static void jammerTask(void* param);
 
     /// Get channel list for a given mode.
     static const uint8_t* getChannelList(NrfJamMode mode, size_t& count);
+
+    /// Apply the current mode's RF settings to the NRF hardware.
+    static void applyModeConfig(NrfJamMode mode, bool flooding);
+
+    /// Populate modeConfigs_ with optimal defaults per mode.
+    static void setDefaults();
 };
 
 #endif // NRF_JAMMER_H

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/ble_provider.dart';
 import '../providers/firmware_protocol.dart';
+import '../models/nrf_jam_mode.dart';
 import '../theme/app_colors.dart';
 
 /// NRF target model for scanned devices
@@ -52,6 +53,8 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
   int _hopStart = 0;
   int _hopStop = 80;
   int _hopStep = 2;
+  int _liveDwellMs = 5;          // Live dwell slider value
+  bool _dwellLive = false;       // True when jammer is running → slider sends live
 
   // MouseJack filter
   bool _hideUnknown = false;
@@ -202,6 +205,12 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
     await bleProvider.sendBinaryCommand(cmd);
     bleProvider.nrfJammerRunning = true;
     bleProvider.notifyListeners();
+    // Read current dwell from cached config for the live slider
+    final cachedCfg = bleProvider.nrfJamModeConfigs[_jamMode];
+    setState(() {
+      _dwellLive = true;
+      _liveDwellMs = cachedCfg?['dwellTimeMs'] ?? 5;
+    });
   }
 
   Future<void> _stopJammer() async {
@@ -209,6 +218,44 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
     final cmd = FirmwareBinaryProtocol.createNrfJamStopCommand();
     await bleProvider.sendBinaryCommand(cmd);
     bleProvider.nrfJammerRunning = false;
+    bleProvider.notifyListeners();
+    setState(() => _dwellLive = false);
+  }
+
+  // ── Jammer Per-Mode Commands ────────────────────────────────
+
+  Future<void> _setDwellTimeLive(int ms) async {
+    final bleProvider = Provider.of<BleProvider>(context, listen: false);
+    final cmd = FirmwareBinaryProtocol.createNrfJamSetDwellCommand(ms);
+    await bleProvider.sendBinaryCommand(cmd);
+  }
+
+  Future<void> _requestModeConfig(int mode) async {
+    final bleProvider = Provider.of<BleProvider>(context, listen: false);
+    final cmd = FirmwareBinaryProtocol.createNrfJamModeConfigGetCommand(mode);
+    await bleProvider.sendBinaryCommand(cmd);
+  }
+
+  Future<void> _setModeConfig(int mode, int pa, int dr, int dwell,
+      bool flooding, int bursts) async {
+    final bleProvider = Provider.of<BleProvider>(context, listen: false);
+    final cmd = FirmwareBinaryProtocol.createNrfJamModeConfigSetCommand(
+        mode, pa, dr, dwell, flooding, bursts);
+    await bleProvider.sendBinaryCommand(cmd);
+  }
+
+  Future<void> _requestModeInfo(int mode) async {
+    final bleProvider = Provider.of<BleProvider>(context, listen: false);
+    final cmd = FirmwareBinaryProtocol.createNrfJamModeInfoCommand(mode);
+    await bleProvider.sendBinaryCommand(cmd);
+  }
+
+  Future<void> _resetAllConfigs() async {
+    final bleProvider = Provider.of<BleProvider>(context, listen: false);
+    final cmd = FirmwareBinaryProtocol.createNrfJamResetConfigCommand();
+    await bleProvider.sendBinaryCommand(cmd);
+    // Clear local cache so it gets refreshed
+    bleProvider.nrfJamModeConfigs.clear();
     bleProvider.notifyListeners();
   }
 
@@ -724,22 +771,59 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
           ),
           const SizedBox(height: 16),
 
-          // Mode selector
+          // Mode selector with settings/info icons
           _buildSectionCard(
             title: 'Mode',
             icon: Icons.tune,
             child: Column(
               children: [
-                _buildModeOption(0, 'Full Spectrum', '1-124 channels', jammerRunning),
-                _buildModeOption(1, 'WiFi', '2.4 GHz WiFi channels', jammerRunning),
-                _buildModeOption(2, 'BLE', 'BLE data channels', jammerRunning),
-                _buildModeOption(3, 'BLE Advertising', 'BLE advert channels', jammerRunning),
-                _buildModeOption(4, 'Bluetooth', 'Classic BT channels', jammerRunning),
-                _buildModeOption(5, 'USB Wireless', 'USB wireless channels', jammerRunning),
-                _buildModeOption(6, 'Video Streaming', 'Video channels', jammerRunning),
-                _buildModeOption(7, 'RC Controllers', 'RC channels', jammerRunning),
-                _buildModeOption(8, 'Single Channel', 'One specific channel', jammerRunning),
-                _buildModeOption(9, 'Custom Hopper', 'Custom range + step', jammerRunning),
+                ...NrfJamModeUiData.allModes.map((m) =>
+                    _buildModeOption(m, bleProvider, jammerRunning)),
+                // Reset all configs button
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton.icon(
+                      onPressed: jammerRunning
+                          ? null
+                          : () async {
+                              final confirm = await showDialog<bool>(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  backgroundColor: AppColors.surfaceElevated,
+                                  title: Text('Reset Defaults',
+                                      style: TextStyle(color: AppColors.primaryText)),
+                                  content: Text(
+                                      'Reset all per-mode configs to optimal firmware defaults?',
+                                      style: TextStyle(color: AppColors.secondaryText)),
+                                  actions: [
+                                    TextButton(
+                                        onPressed: () => Navigator.pop(ctx, false),
+                                        child: Text('Cancel',
+                                            style: TextStyle(color: AppColors.secondaryText))),
+                                    TextButton(
+                                        onPressed: () => Navigator.pop(ctx, true),
+                                        child: Text('Reset',
+                                            style: TextStyle(color: AppColors.error))),
+                                  ],
+                                ),
+                              );
+                              if (confirm == true) _resetAllConfigs();
+                            },
+                      icon: Icon(Icons.restore, size: 16,
+                          color: jammerRunning
+                              ? AppColors.disabledText
+                              : AppColors.secondaryText),
+                      label: Text('Reset Defaults',
+                          style: TextStyle(
+                              fontSize: 12,
+                              color: jammerRunning
+                                  ? AppColors.disabledText
+                                  : AppColors.secondaryText)),
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
@@ -786,6 +870,46 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
                 ],
               ),
             ),
+
+          // Live dwell time slider (visible when jammer is running)
+          if (jammerRunning)
+            _buildSectionCard(
+              title: 'Dwell Time (live)',
+              icon: Icons.speed,
+              child: Column(
+                children: [
+                  Text('${_liveDwellMs} ms',
+                      style: TextStyle(
+                          color: AppColors.primaryAccent,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 4),
+                  Text('Time spent on each channel hop',
+                      style: TextStyle(color: AppColors.secondaryText, fontSize: 11)),
+                  Slider(
+                    value: _liveDwellMs.toDouble(),
+                    min: 1,
+                    max: 200,
+                    divisions: 199,
+                    activeColor: AppColors.primaryAccent,
+                    onChanged: (v) {
+                      setState(() => _liveDwellMs = v.round());
+                    },
+                    onChangeEnd: (v) {
+                      _setDwellTimeLive(v.round());
+                    },
+                  ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('1 ms', style: TextStyle(color: AppColors.disabledText, fontSize: 10)),
+                      Text('100 ms', style: TextStyle(color: AppColors.disabledText, fontSize: 10)),
+                      Text('200 ms', style: TextStyle(color: AppColors.disabledText, fontSize: 10)),
+                    ],
+                  ),
+                ],
+              ),
+            ),
           const SizedBox(height: 16),
 
           // Start/Stop button
@@ -808,13 +932,33 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
     );
   }
 
-  Widget _buildModeOption(int mode, String title, String subtitle, bool jammerRunning) {
-    final isSelected = _jamMode == mode;
+  /// Icon for each jammer mode category
+  IconData _modeIcon(int mode) {
+    switch (mode) {
+      case 0:  return Icons.all_inclusive;        // Full Spectrum
+      case 1:  return Icons.wifi;                 // WiFi
+      case 2:  return Icons.bluetooth;            // BLE Data
+      case 3:  return Icons.bluetooth_searching;  // BLE Advertising
+      case 4:  return Icons.bluetooth_audio;      // Bluetooth
+      case 5:  return Icons.usb;                  // USB Wireless
+      case 6:  return Icons.videocam;             // Video
+      case 7:  return Icons.sports_esports;       // RC
+      case 8:  return Icons.radio;                // Single Channel
+      case 9:  return Icons.swap_horiz;           // Custom Hopper
+      case 10: return Icons.hub;                  // Zigbee
+      case 11: return Icons.flight;               // Drone
+      default: return Icons.wifi_tethering;
+    }
+  }
+
+  Widget _buildModeOption(
+      NrfJamModeUiData modeData, BleProvider bleProvider, bool jammerRunning) {
+    final isSelected = _jamMode == modeData.mode;
     return GestureDetector(
-      onTap: jammerRunning ? null : () => setState(() => _jamMode = mode),
+      onTap: jammerRunning ? null : () => setState(() => _jamMode = modeData.mode),
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 3),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         decoration: BoxDecoration(
           color: isSelected
               ? AppColors.primaryAccent.withValues(alpha: 0.1)
@@ -826,28 +970,304 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
         ),
         child: Row(
           children: [
+            // Mode icon
+            Icon(
+              _modeIcon(modeData.mode),
+              color: isSelected ? AppColors.primaryAccent : AppColors.disabledText,
+              size: 20,
+            ),
+            const SizedBox(width: 8),
+            // Radio button
             Icon(
               isSelected ? Icons.radio_button_checked : Icons.radio_button_off,
               color: isSelected ? AppColors.primaryAccent : AppColors.disabledText,
-              size: 18,
+              size: 16,
             ),
-            const SizedBox(width: 10),
+            const SizedBox(width: 8),
+            // Label and subtitle
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(title,
+                  Text(modeData.label,
                       style: TextStyle(
                           color: AppColors.primaryText,
                           fontWeight: FontWeight.w500,
                           fontSize: 13)),
-                  Text(subtitle,
+                  Text(modeData.shortDesc,
                       style: TextStyle(
                           color: AppColors.secondaryText, fontSize: 11)),
                 ],
               ),
             ),
+            // Settings gear icon
+            _ModeActionButton(
+              icon: Icons.settings,
+              tooltip: 'Settings',
+              onPressed: () => _showModeSettingsDialog(modeData.mode, bleProvider),
+            ),
+            const SizedBox(width: 4),
+            // Info icon
+            _ModeActionButton(
+              icon: Icons.info_outline,
+              tooltip: 'Info',
+              onPressed: () => _showModeInfoDialog(modeData.mode, bleProvider),
+            ),
           ],
+        ),
+      ),
+    );
+  }
+
+  // ── Mode Settings Dialog (cmd 0x43) ──────────────────────────
+
+  Future<void> _showModeSettingsDialog(int mode, BleProvider bleProvider) async {
+    // Request config from firmware first
+    await _requestModeConfig(mode);
+    // Wait briefly for the response notification
+    await Future.delayed(const Duration(milliseconds: 400));
+
+    if (!mounted) return;
+
+    final cachedCfg = bleProvider.nrfJamModeConfigs[mode];
+    int pa = cachedCfg?['paLevel'] ?? 3;
+    int dr = cachedCfg?['dataRate'] ?? 1;
+    int dwell = cachedCfg?['dwellTimeMs'] ?? 5;
+    bool flood = cachedCfg?['useFlooding'] ?? true;
+    int bursts = cachedCfg?['floodBursts'] ?? 3;
+    final modeLabel = NrfJamModeUiData.allModes[mode].label;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx2, setDialogState) {
+            return AlertDialog(
+              backgroundColor: AppColors.surfaceElevated,
+              title: Row(
+                children: [
+                  Icon(_modeIcon(mode), color: AppColors.primaryAccent, size: 22),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text('$modeLabel Settings',
+                        style: TextStyle(color: AppColors.primaryText, fontSize: 16)),
+                  ),
+                ],
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // PA Level
+                    Text('PA Level (Transmit Power)',
+                        style: TextStyle(color: AppColors.secondaryText, fontSize: 12)),
+                    const SizedBox(height: 4),
+                    _buildDropdown<int>(
+                      value: pa,
+                      items: [
+                        _dropItem(0, 'MIN (-18 dBm)'),
+                        _dropItem(1, 'LOW (-12 dBm)'),
+                        _dropItem(2, 'HIGH (-6 dBm)'),
+                        _dropItem(3, 'MAX (0 / +20 PA)'),
+                      ],
+                      onChanged: (v) => setDialogState(() => pa = v ?? pa),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Data Rate
+                    Text('Data Rate',
+                        style: TextStyle(color: AppColors.secondaryText, fontSize: 12)),
+                    const SizedBox(height: 4),
+                    _buildDropdown<int>(
+                      value: dr,
+                      items: [
+                        _dropItem(0, '1 Mbps'),
+                        _dropItem(1, '2 Mbps'),
+                        _dropItem(2, '250 Kbps'),
+                      ],
+                      onChanged: (v) => setDialogState(() => dr = v ?? dr),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Dwell Time
+                    Text('Dwell Time: $dwell ms',
+                        style: TextStyle(color: AppColors.secondaryText, fontSize: 12)),
+                    Slider(
+                      value: dwell.toDouble(),
+                      min: 1,
+                      max: 200,
+                      divisions: 199,
+                      activeColor: AppColors.primaryAccent,
+                      onChanged: (v) => setDialogState(() => dwell = v.round()),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Strategy toggle
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text('Data Flooding',
+                            style: TextStyle(color: AppColors.secondaryText, fontSize: 12)),
+                        Switch(
+                          value: flood,
+                          activeColor: AppColors.primaryAccent,
+                          onChanged: (v) => setDialogState(() => flood = v),
+                        ),
+                      ],
+                    ),
+                    Text(
+                      flood
+                          ? 'Flooding: sends burst packets (good for WiFi, BLE, Zigbee)'
+                          : 'Constant Carrier (CW): holds carrier wave (good for FHSS, BT)',
+                      style: TextStyle(color: AppColors.disabledText, fontSize: 10),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Flood bursts (only visible when flooding)
+                    if (flood) ...[
+                      Text('Flood Bursts per hop: $bursts',
+                          style: TextStyle(color: AppColors.secondaryText, fontSize: 12)),
+                      Slider(
+                        value: bursts.toDouble(),
+                        min: 1,
+                        max: 10,
+                        divisions: 9,
+                        activeColor: AppColors.primaryAccent,
+                        onChanged: (v) => setDialogState(() => bursts = v.round()),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: Text('Cancel',
+                      style: TextStyle(color: AppColors.secondaryText)),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primaryAccent,
+                    foregroundColor: AppColors.primaryBackground,
+                  ),
+                  onPressed: () {
+                    _setModeConfig(mode, pa, dr, dwell, flood, bursts);
+                    Navigator.pop(ctx);
+                  },
+                  child: const Text('Apply'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // ── Mode Info Dialog (cmd 0x44) ──────────────────────────────
+
+  Future<void> _showModeInfoDialog(int mode, BleProvider bleProvider) async {
+    // Request info from firmware
+    await _requestModeInfo(mode);
+    await Future.delayed(const Duration(milliseconds: 400));
+
+    if (!mounted) return;
+
+    final cached = bleProvider.nrfJamModeInfos[mode];
+    final ui = NrfJamModeUiData.allModes[mode];
+    final name = cached?['name'] ?? ui.label;
+    final desc = cached?['description'] ?? ui.shortDesc;
+    final freqStart = cached?['freqStartMHz'] ?? 2400;
+    final freqEnd = cached?['freqEndMHz'] ?? 2525;
+    final chCount = cached?['channelCount'] ?? 0;
+
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surfaceElevated,
+        title: Row(
+          children: [
+            Icon(_modeIcon(mode), color: AppColors.primaryAccent, size: 22),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(name,
+                  style: TextStyle(color: AppColors.primaryText, fontSize: 16)),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(desc,
+                style: TextStyle(color: AppColors.secondaryText, fontSize: 13)),
+            const SizedBox(height: 16),
+            _infoRow('Frequency Range', '$freqStart – $freqEnd MHz'),
+            _infoRow('Channels', '$chCount'),
+            _infoRow('Mode Index', '$mode'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('Close', style: TextStyle(color: AppColors.primaryAccent)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _infoRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label,
+              style: TextStyle(color: AppColors.disabledText, fontSize: 12)),
+          Text(value,
+              style: TextStyle(
+                  color: AppColors.primaryText,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500)),
+        ],
+      ),
+    );
+  }
+
+  // ── Dropdown helper ─────────────────────────────────────────
+
+  DropdownMenuItem<T> _dropItem<T>(T value, String label) {
+    return DropdownMenuItem<T>(
+      value: value,
+      child: Text(label,
+          style: TextStyle(color: AppColors.primaryText, fontSize: 13)),
+    );
+  }
+
+  Widget _buildDropdown<T>({
+    required T value,
+    required List<DropdownMenuItem<T>> items,
+    required ValueChanged<T?> onChanged,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      decoration: BoxDecoration(
+        color: AppColors.primaryBackground,
+        border: Border.all(color: AppColors.borderDefault),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<T>(
+          value: value,
+          items: items,
+          onChanged: onChanged,
+          isExpanded: true,
+          dropdownColor: AppColors.surfaceElevated,
+          iconEnabledColor: AppColors.primaryAccent,
         ),
       ),
     );
@@ -913,6 +1333,35 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
             child: child,
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ── Small icon button for settings / info on each mode row ──────
+
+class _ModeActionButton extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onPressed;
+
+  const _ModeActionButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onPressed,
+        child: Padding(
+          padding: const EdgeInsets.all(6),
+          child: Icon(icon, size: 18, color: AppColors.secondaryText),
+        ),
       ),
     );
   }

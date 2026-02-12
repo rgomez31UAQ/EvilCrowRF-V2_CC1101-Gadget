@@ -1,21 +1,30 @@
 /**
  * @file NrfJammer.cpp
- * @brief 2.4 GHz jammer with multiple mode presets and dual jamming methods.
+ * @brief 2.4 GHz jammer with per-mode tunable RF parameters.
  *
- * Uses the nRF24L01+ in two modes:
- *  - Constant Carrier (CW): Unmodulated RF at max power for FHSS targets
- *    (Bluetooth Classic, Drones). Hops rapidly through relevant channels.
- *  - Data Flooding (writeFast): Transmits garbage packets at max speed
- *    to create packet-level collisions for channel-specific targets
- *    (WiFi, BLE, Zigbee).
+ * Hardware: E01-ML01SP2 (NRF24L01+ with PA+LNA, up to +20 dBm).
  *
- * Channel mappings derived from the nRF24_jammer project and RF standards:
- *  - nRF24 channel N = 2400 + N MHz
- *  - WiFi ch 1 = 2412 MHz center, 22 MHz bandwidth → nRF24 ch 1-23
- *  - BLE advertising ch 37 = 2402 MHz → nRF24 ch 2
- *  - BLE advertising ch 38 = 2426 MHz → nRF24 ch 26
- *  - BLE advertising ch 39 = 2480 MHz → nRF24 ch 80
- *  - Zigbee ch 11 = 2405 MHz → nRF24 ch 4-6, etc.
+ * Two jamming strategies:
+ *  - Constant Carrier (CW): Unmodulated tone at max power.
+ *    Best for FHSS targets (Bluetooth Classic, Drones) because
+ *    the CW disrupts the PLL lock of hopping receivers.
+ *  - Data Flooding (writeFast): Garbage packets at max speed.
+ *    Best for channel-specific targets (WiFi, BLE, Zigbee) because
+ *    it creates real packet collisions/corruption.
+ *
+ * Each mode has independent settings (PA, data rate, dwell time,
+ * CW vs flooding, flood bursts) stored in flash and configurable
+ * from the app.  The **dwell time** (ms on each channel before hop)
+ * is the most impactful parameter for jam effectiveness:
+ *  - Too low → target escapes between hops
+ *  - Too high → misses FHSS or multi-channel targets
+ *
+ * Channel mappings (nRF24 channel N = 2400 + N MHz):
+ *  WiFi ch 1 center = 2412 → nRF ch 12, BW 22 MHz → ch 1-23
+ *  BLE adv ch 37 = 2402 → nRF ch 2
+ *  BLE adv ch 38 = 2426 → nRF ch 26
+ *  BLE adv ch 39 = 2480 → nRF ch 80
+ *  Zigbee ch 11 = 2405 → nRF ch 4-6  (each ±1 MHz)
  */
 
 #include "NrfJammer.h"
@@ -23,6 +32,8 @@
 #include "core/ble/ClientsManager.h"
 #include "BinaryMessages.h"
 #include "core/device_controls/DeviceControls.h"
+#include "ConfigManager.h"
+#include <LittleFS.h>
 #include "esp_log.h"
 
 static const char* TAG = "NrfJammer";
@@ -32,11 +43,45 @@ volatile bool NrfJammer::running_     = false;
 volatile bool NrfJammer::stopRequest_ = false;
 TaskHandle_t  NrfJammer::taskHandle_  = nullptr;
 NrfJamMode    NrfJammer::currentMode_ = NRF_JAM_FULL;
-uint8_t       NrfJammer::currentChannel_ = 50;
+volatile uint8_t NrfJammer::currentChannel_ = 50;
 NrfHopperConfig NrfJammer::hopperConfig_ = {0, 80, 2};
+NrfJamModeConfig NrfJammer::modeConfigs_[NRF_JAM_MODE_COUNT] = {};
 
-// Garbage payload for data flooding (same as nRF24_jammer reference)
-static const char JAM_FLOOD_DATA[] = "xxxxxxxxxxxxxxxx";
+// Garbage payload for data flooding — 16 bytes of noise
+static const uint8_t JAM_FLOOD_DATA[] = "xxxxxxxxxxxxxxxx";
+
+// Flash persistence path for per-mode configs
+static const char* NRF_JAM_CONFIG_PATH = "/nrf_jam_cfg.bin";
+
+// ── Optimal Defaults Per Mode ───────────────────────────────────
+//
+// These are tuned for the E01-ML01SP2 (PA+LNA) module.
+// PA level 3 = chip 0dBm → module amplifies to ~+20dBm.
+//
+// Key insight on dwell time:
+//  - WiFi frames: 1-10ms → dwell 4ms covers most frame durations
+//  - BLE adv:  376µs-2ms but only 3 channels → dwell 15ms each
+//  - BLE data: ~1ms packets, 40 channels → dwell 2ms balances speed/coverage
+//  - BT classic: 625µs slots, 79 FHSS channels → dwell 1ms for speed
+//  - Zigbee: 4ms frames, 16 channels → dwell 4ms per sub-channel
+//  - Drone: random FHSS → 1ms fast random hop
+//  - Full: 125 channels → 1ms = 125ms per sweep (acceptable)
+
+void NrfJammer::setDefaults() {
+    //                                    PA  DR   dwell  flood  bursts
+    modeConfigs_[NRF_JAM_FULL]       = { 3,  1,   1,     0,     1 };  // CW, fast sweep
+    modeConfigs_[NRF_JAM_WIFI]       = { 3,  1,   4,     1,     3 };  // Flood, 4ms/sub-ch
+    modeConfigs_[NRF_JAM_BLE]        = { 3,  1,   2,     1,     2 };  // Flood, 2ms/ch
+    modeConfigs_[NRF_JAM_BLE_ADV]    = { 3,  1,  15,     1,     5 };  // Flood, 15ms/ch (only 3 ch)
+    modeConfigs_[NRF_JAM_BLUETOOTH]  = { 3,  1,   1,     0,     1 };  // CW, fast FHSS
+    modeConfigs_[NRF_JAM_USB]        = { 3,  1,   8,     0,     1 };  // CW, 8ms/ch (3 ch)
+    modeConfigs_[NRF_JAM_VIDEO]      = { 3,  1,   8,     0,     1 };  // CW, 8ms/ch (3 ch)
+    modeConfigs_[NRF_JAM_RC]         = { 3,  1,  10,     0,     1 };  // CW, 10ms/ch (4 ch)
+    modeConfigs_[NRF_JAM_SINGLE]     = { 3,  1,   1,     0,     1 };  // CW, fixed channel
+    modeConfigs_[NRF_JAM_HOPPER]     = { 3,  1,   2,     0,     1 };  // CW, custom range
+    modeConfigs_[NRF_JAM_ZIGBEE]     = { 3,  1,   4,     1,     3 };  // Flood, 4ms/sub-ch
+    modeConfigs_[NRF_JAM_DRONE]      = { 3,  1,   1,     0,     1 };  // CW, random fast
+}
 
 // ── Channel lists for each jamming mode ─────────────────────────
 
@@ -100,37 +145,67 @@ static void initFullChannels() {
     }
 }
 
-// ── Determine jamming method per mode ───────────────────────────
+// WiFi channels: each WiFi ch spans 22 MHz. We cover sub-channels across all 13.
+// WiFi ch 1 center=2412→nRF ch 12, ch 6=2437→nRF ch 37, ch 11=2462→nRF ch 62
+// Spread: centers + ±5 MHz offsets for better bandwidth coverage
+static const uint8_t JAM_WIFI_CHANNELS[] = {
+    1,  3,  5,  7,  9, 11, 13, 15, 17, 19, 21, 23,  // WiFi ch 1 (2401-2423)
+   26, 28, 30, 32, 34, 36, 38, 40, 42,               // WiFi ch 6 (2426-2448)
+   51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73    // WiFi ch 11 (2451-2473)
+};
 
-/**
- * Returns true if the mode should use data flooding (writeFast),
- * false if it should use constant carrier (CW).
- *
- * - Constant Carrier: Best for FHSS targets (BT classic, drones)
- *   because the CW disrupts the PLL lock of hopping receivers.
- * - Data Flooding: Best for channel-specific targets (WiFi, BLE,
- *   Zigbee) because it creates actual packet collisions/corruption.
- */
-static bool useDataFlooding(NrfJamMode mode) {
-    switch (mode) {
-        case NRF_JAM_BLE:
-        case NRF_JAM_BLE_ADV:
-        case NRF_JAM_WIFI:
-        case NRF_JAM_ZIGBEE:
-            return true;
-        case NRF_JAM_BLUETOOTH:
-        case NRF_JAM_DRONE:
-        case NRF_JAM_USB:
-        case NRF_JAM_VIDEO:
-        case NRF_JAM_RC:
-        case NRF_JAM_SINGLE:
-            return false;
-        case NRF_JAM_FULL:
-        case NRF_JAM_HOPPER:
-        default:
-            return false;  // CW for full-band and custom range
-    }
-}
+// ── Static mode info table (compiled into flash) ────────────────
+
+static const NrfJamModeInfo MODE_INFO_TABLE[NRF_JAM_MODE_COUNT] = {
+    // NRF_JAM_FULL (0)
+    { "Full Spectrum", "Sweeps all 125 channels (2400-2525 MHz). "
+      "Covers everything but dwell time per channel is minimal.",
+      nullptr, 125, 2400, 2525 },
+    // NRF_JAM_WIFI (1)
+    { "WiFi 2.4GHz", "Targets WiFi channels 1, 6, 11 (most common non-overlapping). "
+      "Floods 22 MHz bandwidth per WiFi channel. 33 nRF sub-channels.",
+      JAM_WIFI_CHANNELS, sizeof(JAM_WIFI_CHANNELS), 2401, 2473 },
+    // NRF_JAM_BLE (2)
+    { "BLE Data", "BLE data channels 0-36 mapped to nRF ch 2-80 (even). "
+      "Data flooding creates packet collisions on active connections.",
+      JAM_BLE_CHANNELS, sizeof(JAM_BLE_CHANNELS), 2402, 2480 },
+    // NRF_JAM_BLE_ADV (3)
+    { "BLE Advertising", "Only 3 BLE advertising channels: 37(2402), 38(2426), 39(2480). "
+      "Blocks device discovery and pairing. High dwell = high effectiveness.",
+      JAM_BLE_ADV_CHANNELS, sizeof(JAM_BLE_ADV_CHANNELS), 2402, 2480 },
+    // NRF_JAM_BLUETOOTH (4)
+    { "Bluetooth Classic", "Classic BT uses FHSS across 79 channels (2402-2480 MHz). "
+      "CW carrier disrupts PLL lock. Fast hopping essential.",
+      JAM_BLUETOOTH_CHANNELS, sizeof(JAM_BLUETOOTH_CHANNELS), 2402, 2480 },
+    // NRF_JAM_USB (5)
+    { "USB Wireless", "Wireless USB dongles typically use channels 40, 50, 60. "
+      "CW on these 3 channels with high dwell time.",
+      JAM_USB_CHANNELS, sizeof(JAM_USB_CHANNELS), 2440, 2460 },
+    // NRF_JAM_VIDEO (6)
+    { "Video Streaming", "Analog/digital 2.4GHz video transmitters (FPV, baby monitors). "
+      "Channels 70, 75, 80 (2470-2480 MHz upper ISM band).",
+      JAM_VIDEO_CHANNELS, sizeof(JAM_VIDEO_CHANNELS), 2470, 2480 },
+    // NRF_JAM_RC (7)
+    { "RC Controllers", "RC toys and drones on low channels 1, 3, 5, 7 (2401-2407 MHz). "
+      "Few channels — high dwell time recommended.",
+      JAM_RC_CHANNELS, sizeof(JAM_RC_CHANNELS), 2401, 2407 },
+    // NRF_JAM_SINGLE (8)
+    { "Single Channel", "Constant carrier or flood on one specific channel. "
+      "Use the channel slider to target a precise frequency.",
+      nullptr, 1, 2400, 2525 },
+    // NRF_JAM_HOPPER (9)
+    { "Custom Hopper", "User-defined channel range with configurable step size. "
+      "Start/Stop/Step set from the hopper config panel.",
+      nullptr, 0, 2400, 2525 },
+    // NRF_JAM_ZIGBEE (10)
+    { "Zigbee", "Zigbee channels 11-26 (2405-2480 MHz, 5 MHz spacing). "
+      "Each Zigbee channel covered by 3 nRF sub-channels (±1 MHz). 48 total.",
+      JAM_ZIGBEE_CHANNELS, sizeof(JAM_ZIGBEE_CHANNELS), 2405, 2480 },
+    // NRF_JAM_DRONE (11)
+    { "Drone", "Drone protocols use various FHSS schemes across 2.4 GHz. "
+      "Random fast hopping with CW disrupts PLL lock on drone receivers.",
+      nullptr, 125, 2400, 2525 },
+};
 
 // ── Channel list accessor ───────────────────────────────────────
 
@@ -145,6 +220,9 @@ const uint8_t* NrfJammer::getChannelList(NrfJamMode mode, size_t& count) {
         case NRF_JAM_BLUETOOTH:
             count = sizeof(JAM_BLUETOOTH_CHANNELS);
             return JAM_BLUETOOTH_CHANNELS;
+        case NRF_JAM_WIFI:
+            count = sizeof(JAM_WIFI_CHANNELS);
+            return JAM_WIFI_CHANNELS;
         case NRF_JAM_USB:
             count = sizeof(JAM_USB_CHANNELS);
             return JAM_USB_CHANNELS;
@@ -157,10 +235,6 @@ const uint8_t* NrfJammer::getChannelList(NrfJamMode mode, size_t& count) {
         case NRF_JAM_ZIGBEE:
             count = sizeof(JAM_ZIGBEE_CHANNELS);
             return JAM_ZIGBEE_CHANNELS;
-        case NRF_JAM_WIFI:
-            // WiFi uses a special sweep in jammerTask, not a simple list
-            count = 0;
-            return nullptr;
         case NRF_JAM_DRONE:
             // Drone uses random channel hopping, not a list
             count = 0;
@@ -171,6 +245,116 @@ const uint8_t* NrfJammer::getChannelList(NrfJamMode mode, size_t& count) {
             count = 125;
             return JAM_FULL_CHANNELS;
     }
+}
+
+// ── Per-mode config accessors ───────────────────────────────────
+
+const NrfJamModeConfig& NrfJammer::getModeConfig(NrfJamMode mode) {
+    uint8_t idx = (uint8_t)mode;
+    if (idx >= NRF_JAM_MODE_COUNT) idx = 0;
+    return modeConfigs_[idx];
+}
+
+bool NrfJammer::setModeConfig(NrfJamMode mode, const NrfJamModeConfig& cfg, bool persist) {
+    uint8_t idx = (uint8_t)mode;
+    if (idx >= NRF_JAM_MODE_COUNT) return false;
+
+    // Clamp values to safe ranges
+    NrfJamModeConfig safe = cfg;
+    if (safe.paLevel > 3) safe.paLevel = 3;
+    if (safe.dataRate > 2) safe.dataRate = 1;
+    if (safe.dwellTimeMs < 1) safe.dwellTimeMs = 1;
+    if (safe.dwellTimeMs > 200) safe.dwellTimeMs = 200;
+    if (safe.useFlooding > 1) safe.useFlooding = 1;
+    if (safe.floodBursts < 1) safe.floodBursts = 1;
+    if (safe.floodBursts > 10) safe.floodBursts = 10;
+
+    modeConfigs_[idx] = safe;
+    ESP_LOGI(TAG, "Mode %d config: PA=%d DR=%d dwell=%dms flood=%d bursts=%d",
+             idx, safe.paLevel, safe.dataRate, safe.dwellTimeMs,
+             safe.useFlooding, safe.floodBursts);
+
+    if (persist) return saveConfigs();
+    return true;
+}
+
+const NrfJamModeInfo& NrfJammer::getModeInfo(NrfJamMode mode) {
+    uint8_t idx = (uint8_t)mode;
+    if (idx >= NRF_JAM_MODE_COUNT) idx = 0;
+    return MODE_INFO_TABLE[idx];
+}
+
+// ── Flash persistence ───────────────────────────────────────────
+
+// File format: [version:1][12 × NrfJamModeConfig structs]
+#define NRF_JAM_CFG_VERSION 1
+
+void NrfJammer::loadConfigs() {
+    setDefaults();  // Always start from defaults
+
+    if (!LittleFS.exists(NRF_JAM_CONFIG_PATH)) {
+        ESP_LOGI(TAG, "No jam config file — using defaults");
+        return;
+    }
+
+    File f = LittleFS.open(NRF_JAM_CONFIG_PATH, "r");
+    if (!f) {
+        ESP_LOGW(TAG, "Failed to open jam config");
+        return;
+    }
+
+    uint8_t version = f.read();
+    if (version != NRF_JAM_CFG_VERSION) {
+        ESP_LOGW(TAG, "Jam config version mismatch (got %d, want %d) — using defaults",
+                 version, NRF_JAM_CFG_VERSION);
+        f.close();
+        return;
+    }
+
+    size_t expected = sizeof(NrfJamModeConfig) * NRF_JAM_MODE_COUNT;
+    size_t bytesRead = f.read((uint8_t*)modeConfigs_, expected);
+    f.close();
+
+    if (bytesRead != expected) {
+        ESP_LOGW(TAG, "Jam config file truncated (%d/%d bytes) — resetting", bytesRead, expected);
+        setDefaults();
+        return;
+    }
+
+    // Validate and clamp each loaded config
+    for (int i = 0; i < NRF_JAM_MODE_COUNT; i++) {
+        auto& c = modeConfigs_[i];
+        if (c.paLevel > 3) c.paLevel = 3;
+        if (c.dataRate > 2) c.dataRate = 1;
+        if (c.dwellTimeMs < 1) c.dwellTimeMs = 1;
+        if (c.dwellTimeMs > 200) c.dwellTimeMs = 200;
+        if (c.useFlooding > 1) c.useFlooding = 0;
+        if (c.floodBursts < 1) c.floodBursts = 1;
+        if (c.floodBursts > 10) c.floodBursts = 10;
+    }
+
+    ESP_LOGI(TAG, "Jam configs loaded from flash (%d modes)", NRF_JAM_MODE_COUNT);
+}
+
+bool NrfJammer::saveConfigs() {
+    File f = LittleFS.open(NRF_JAM_CONFIG_PATH, FILE_WRITE);
+    if (!f) {
+        ESP_LOGE(TAG, "Failed to write jam config");
+        return false;
+    }
+
+    f.write(NRF_JAM_CFG_VERSION);
+    f.write((uint8_t*)modeConfigs_, sizeof(NrfJamModeConfig) * NRF_JAM_MODE_COUNT);
+    f.close();
+
+    ESP_LOGI(TAG, "Jam configs saved to flash");
+    return true;
+}
+
+void NrfJammer::resetToDefaults() {
+    setDefaults();
+    saveConfigs();
+    ESP_LOGI(TAG, "Jam configs reset to optimal defaults");
 }
 
 // ── Start/Stop ──────────────────────────────────────────────────
@@ -198,12 +382,17 @@ bool NrfJammer::start(NrfJamMode mode) {
         return false;
     }
 
-    // Notify app that jammer is active
-    uint8_t notif[3] = { MSG_NRF_JAM_STATUS, 1, (uint8_t)mode };
+    // Notify app: [JAM_STATUS][running:1][mode:1][dwellMs_lo][dwellMs_hi]
+    const auto& cfg = getModeConfig(mode);
+    uint8_t notif[5] = {
+        MSG_NRF_JAM_STATUS, 1, (uint8_t)mode,
+        (uint8_t)(cfg.dwellTimeMs & 0xFF),
+        (uint8_t)((cfg.dwellTimeMs >> 8) & 0xFF)
+    };
     ClientsManager::getInstance().notifyAllBinary(
         NotificationType::NrfEvent, notif, sizeof(notif));
 
-    ESP_LOGI(TAG, "Jammer started (mode=%d)", mode);
+    ESP_LOGI(TAG, "Jammer started (mode=%d dwell=%dms)", mode, cfg.dwellTimeMs);
     return true;
 }
 
@@ -230,13 +419,29 @@ bool NrfJammer::startHopper(const NrfHopperConfig& config) {
 }
 
 bool NrfJammer::setMode(NrfJamMode mode) {
-    // Can change mode while running (atomic write)
+    // Can change mode while running (atomic write).
+    // The task loop detects the change and re-applies the mode config.
     currentMode_ = mode;
     return true;
 }
 
 bool NrfJammer::setChannel(uint8_t channel) {
+    // Live channel update for SINGLE mode.
+    // The task reads currentChannel_ each iteration — this takes effect
+    // within 1 loop cycle (dwell time delay).
     currentChannel_ = channel;
+    return true;
+}
+
+bool NrfJammer::setDwellTime(uint16_t ms) {
+    if (ms < 1) ms = 1;
+    if (ms > 200) ms = 200;
+    // Update the current mode's config in RAM (not persisted until explicit save)
+    uint8_t idx = (uint8_t)currentMode_;
+    if (idx < NRF_JAM_MODE_COUNT) {
+        modeConfigs_[idx].dwellTimeMs = ms;
+        ESP_LOGI(TAG, "Dwell time updated to %dms (mode=%d)", ms, idx);
+    }
     return true;
 }
 
@@ -246,29 +451,32 @@ void NrfJammer::stop() {
     ESP_LOGI(TAG, "Jammer stop requested");
 }
 
-// ── WiFi Bandwidth Sweep ────────────────────────────────────────
+// ── Apply per-mode RF config to hardware ────────────────────────
 
-/**
- * Sweep all 22 nRF24 channels that make up one WiFi channel's bandwidth.
- * WiFi channel N (1-indexed) center = 2412 + 5*(N-1) MHz = nRF24 ch 12+5*(N-1).
- * Bandwidth = 22 MHz, so sweep from center-11 to center+10.
- *
- * This function sweeps all 13 WiFi channels sequentially, flooding
- * each sub-channel with garbage data.
- */
-static void wifiJamSweep() {
-    for (int wifiCh = 0; wifiCh < 13; wifiCh++) {
-        int startCh = (wifiCh * 5) + 1;
-        for (int ch = startCh; ch < startCh + 22; ch++) {
-            if (ch >= 0 && ch <= 125) {
-                NrfModule::setChannel(ch);
-                NrfModule::writeFast(JAM_FLOOD_DATA, sizeof(JAM_FLOOD_DATA));
-            }
-        }
-    }
+void NrfJammer::applyModeConfig(NrfJamMode mode, bool flooding) {
+    const auto& cfg = getModeConfig(mode);
+
+    NrfModule::writeRegister(NRF_REG_CONFIG, NRF_PWR_UP);
+    delay(2);
+
+    NrfModule::setPALevel(cfg.paLevel);
+    NrfModule::setDataRate((NrfDataRate)cfg.dataRate);
+    NrfModule::writeRegister(NRF_REG_EN_AA, 0x00);      // No auto-ack for jamming
+    NrfModule::writeRegister(NRF_REG_SETUP_RETR, 0x00);  // No retries
+    NrfModule::disableCRC();
+    NrfModule::setAddressWidth(3);     // Minimum address for speed
+    NrfModule::setPayloadSize(sizeof(JAM_FLOOD_DATA));
+
+    ESP_LOGI(TAG, "Applied config: PA=%d DR=%d dwell=%dms flood=%d bursts=%d",
+             cfg.paLevel, cfg.dataRate, cfg.dwellTimeMs,
+             cfg.useFlooding, cfg.floodBursts);
 }
 
 // ── Jammer Task ─────────────────────────────────────────────────
+//
+// The task loop reads the per-mode config each iteration so that
+// changes from the app (dwell time, PA, channel) take effect live
+// without requiring a stop+restart cycle.
 
 void NrfJammer::jammerTask(void* param) {
     ESP_LOGI(TAG, "Jammer task started");
@@ -281,104 +489,96 @@ void NrfJammer::jammerTask(void* param) {
     }
 
     NrfJamMode activeMode = currentMode_;
-    bool flooding = useDataFlooding(activeMode);
+    const NrfJamModeConfig* cfg = &modeConfigs_[(uint8_t)activeMode];
+    bool flooding = (cfg->useFlooding != 0);
 
-    // Common radio setup
-    NrfModule::writeRegister(NRF_REG_CONFIG, NRF_PWR_UP);
-    delay(2);
-
-    NrfModule::setPALevel(3);           // Max power (0 dBm)
-    NrfModule::setDataRate(NRF_2MBPS);  // 2 Mbps for maximum RF bandwidth
-    NrfModule::writeRegister(NRF_REG_EN_AA, 0x00);     // No auto-ack
-    NrfModule::writeRegister(NRF_REG_SETUP_RETR, 0x00); // No retries
-    NrfModule::disableCRC();            // No CRC for maximum speed
-    NrfModule::setAddressWidth(3);      // Minimum address for speed
-    NrfModule::setPayloadSize(sizeof(JAM_FLOOD_DATA));
+    // Initial radio setup from current mode's config
+    applyModeConfig(activeMode, flooding);
 
     if (!flooding) {
-        // Constant Carrier mode: start CW on initial channel
         NrfModule::startConstCarrier(currentChannel_);
     } else {
-        // Data flooding: configure TX mode (no constant carrier)
-        NrfModule::writeRegister(NRF_REG_CONFIG, NRF_PWR_UP);  // TX mode, no CRC
         NrfModule::flushTx();
-        NrfModule::writeRegister(NRF_REG_STATUS, 0x70);  // Clear flags
+        NrfModule::writeRegister(NRF_REG_STATUS, 0x70);
     }
 
     size_t hopIndex = 0;
 
     while (!stopRequest_) {
-        // Check if mode changed dynamically
+        // ── Hot-swap: detect mode change from app ───────────────
         if (activeMode != currentMode_) {
+            // Stop current carrier before reconfiguring
+            if (!flooding) {
+                NrfModule::stopConstCarrier();
+            }
+
             activeMode = currentMode_;
-            flooding = useDataFlooding(activeMode);
+            cfg = &modeConfigs_[(uint8_t)activeMode];
+            flooding = (cfg->useFlooding != 0);
             hopIndex = 0;
 
+            applyModeConfig(activeMode, flooding);
+
             if (!flooding) {
-                // Switch to constant carrier
                 NrfModule::startConstCarrier(currentChannel_);
             } else {
-                // Switch to data flooding: stop carrier, configure TX
-                NrfModule::stopConstCarrier();
-                NrfModule::writeRegister(NRF_REG_CONFIG, NRF_PWR_UP);
-                delay(2);
-                NrfModule::setPALevel(3);
-                NrfModule::setDataRate(NRF_2MBPS);
-                NrfModule::writeRegister(NRF_REG_EN_AA, 0x00);
-                NrfModule::writeRegister(NRF_REG_SETUP_RETR, 0x00);
-                NrfModule::disableCRC();
                 NrfModule::flushTx();
                 NrfModule::writeRegister(NRF_REG_STATUS, 0x70);
             }
         }
 
-        // ── WiFi mode: special sweep across bandwidth ───────────
-        if (activeMode == NRF_JAM_WIFI) {
-            wifiJamSweep();
-            // Yield to other tasks briefly
-            vTaskDelay(pdMS_TO_TICKS(1));
-            continue;
-        }
+        // Read dwell time each iteration (allows live adjustment)
+        uint16_t dwellMs = cfg->dwellTimeMs;
+        uint8_t  bursts  = cfg->floodBursts;
 
-        // ── Drone mode: random channel hopping with CW ─────────
+        // ── Drone mode: random channel hopping with CW ──────────
         if (activeMode == NRF_JAM_DRONE) {
             uint8_t randomCh = random(125);
             NrfModule::ceLow();
             NrfModule::setChannel(randomCh);
             NrfModule::ceHigh();
-            vTaskDelay(pdMS_TO_TICKS(1));
+            vTaskDelay(pdMS_TO_TICKS(dwellMs));
             continue;
         }
 
-        // ── Single channel: keep carrier on one channel ─────────
+        // ── Single channel: carrier/flood on one channel ────────
+        // currentChannel_ is volatile — updated by setChannel() from BLE 0x2D
         if (activeMode == NRF_JAM_SINGLE) {
-            if (!flooding) {
-                NrfModule::ceLow();
-                NrfModule::setChannel(currentChannel_);
-                NrfModule::ceHigh();
+            uint8_t ch = currentChannel_;
+            if (flooding) {
+                NrfModule::setChannel(ch);
+                for (uint8_t b = 0; b < bursts; b++) {
+                    NrfModule::writeFast(JAM_FLOOD_DATA, sizeof(JAM_FLOOD_DATA));
+                }
             } else {
-                NrfModule::setChannel(currentChannel_);
-                NrfModule::writeFast(JAM_FLOOD_DATA, sizeof(JAM_FLOOD_DATA));
+                NrfModule::ceLow();
+                NrfModule::setChannel(ch);
+                NrfModule::ceHigh();
             }
-            vTaskDelay(pdMS_TO_TICKS(1));
+            vTaskDelay(pdMS_TO_TICKS(dwellMs));
             continue;
         }
 
         // ── Hopper mode: custom range ───────────────────────────
         if (activeMode == NRF_JAM_HOPPER) {
-            if (!flooding) {
-                NrfModule::ceLow();
-                NrfModule::setChannel(currentChannel_);
-                NrfModule::ceHigh();
+            uint8_t ch = currentChannel_;
+            if (flooding) {
+                NrfModule::setChannel(ch);
+                for (uint8_t b = 0; b < bursts; b++) {
+                    NrfModule::writeFast(JAM_FLOOD_DATA, sizeof(JAM_FLOOD_DATA));
+                }
             } else {
-                NrfModule::setChannel(currentChannel_);
-                NrfModule::writeFast(JAM_FLOOD_DATA, sizeof(JAM_FLOOD_DATA));
+                NrfModule::ceLow();
+                NrfModule::setChannel(ch);
+                NrfModule::ceHigh();
             }
-            currentChannel_ += hopperConfig_.stepSize;
-            if (currentChannel_ > hopperConfig_.stopChannel) {
-                currentChannel_ = hopperConfig_.startChannel;
+            // Advance channel for next iteration
+            uint8_t nextCh = ch + hopperConfig_.stepSize;
+            if (nextCh > hopperConfig_.stopChannel) {
+                nextCh = hopperConfig_.startChannel;
             }
-            vTaskDelay(pdMS_TO_TICKS(1));
+            currentChannel_ = nextCh;
+            vTaskDelay(pdMS_TO_TICKS(dwellMs));
             continue;
         }
 
@@ -389,11 +589,13 @@ void NrfJammer::jammerTask(void* param) {
             uint8_t ch = channels[hopIndex % count];
 
             if (flooding) {
-                // Data flooding: set channel and spam garbage
                 NrfModule::setChannel(ch);
-                NrfModule::writeFast(JAM_FLOOD_DATA, sizeof(JAM_FLOOD_DATA));
+                // Send multiple flood packets per channel for better collision rate
+                for (uint8_t b = 0; b < bursts; b++) {
+                    NrfModule::writeFast(JAM_FLOOD_DATA, sizeof(JAM_FLOOD_DATA));
+                }
             } else {
-                // Constant carrier: toggle CE for PLL re-lock
+                // CW: toggle CE to re-lock PLL on new channel
                 NrfModule::ceLow();
                 NrfModule::setChannel(ch);
                 NrfModule::ceHigh();
@@ -403,10 +605,9 @@ void NrfJammer::jammerTask(void* param) {
             if (hopIndex >= count) hopIndex = 0;
         }
 
-        // 1ms delay: fast enough for effective jamming while giving
-        // other Core-1 tasks CPU time. Full sweep at 125 channels
-        // takes ~125ms which is well within effective jamming range.
-        vTaskDelay(pdMS_TO_TICKS(1));
+        // Dwell time: stay on this channel for the configured duration.
+        // This is the most impactful tuning parameter.
+        vTaskDelay(pdMS_TO_TICKS(dwellMs));
     }
 
     // Cleanup
@@ -419,7 +620,7 @@ void NrfJammer::jammerTask(void* param) {
     taskHandle_ = nullptr;
 
     // Notify app that jammer stopped
-    uint8_t notif[3] = { MSG_NRF_JAM_STATUS, 0, 0 };
+    uint8_t notif[5] = { MSG_NRF_JAM_STATUS, 0, 0, 0, 0 };
     ClientsManager::getInstance().notifyAllBinary(
         NotificationType::NrfEvent, notif, sizeof(notif));
 

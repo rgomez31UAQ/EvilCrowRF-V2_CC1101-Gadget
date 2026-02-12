@@ -56,6 +56,8 @@ enum BinaryMessageType : uint8_t {
     MSG_NRF_SCAN_STATUS     = 0xD3, // Scan status + target list response
     MSG_NRF_SPECTRUM_DATA   = 0xD4, // 80-channel spectrum levels
     MSG_NRF_JAM_STATUS      = 0xD5, // Jammer status update
+    MSG_NRF_JAM_MODE_CONFIG = 0xD6, // Per-mode config response/update
+    MSG_NRF_JAM_MODE_INFO   = 0xD7, // Mode info (channels, description)
     
     // SDR mode events
     MSG_SDR_STATUS        = 0xC4,  // Device → App: SDR mode status

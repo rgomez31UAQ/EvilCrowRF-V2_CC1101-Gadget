@@ -131,8 +131,14 @@ class BleProvider extends ChangeNotifier {
   bool nrfJammerRunning = false;
   int nrfJamMode = 0;
   int nrfJamChannel = 0;
+  int nrfJamDwellTimeMs = 0;
   List<Map<String, dynamic>> nrfTargets = [];
   List<int> nrfSpectrumLevels = List.filled(126, 0);
+
+  // Per-mode jammer config cache (populated by 0xD6 responses)
+  Map<int, Map<String, dynamic>> nrfJamModeConfigs = {};
+  // Per-mode jammer info cache (populated by 0xD7 responses)
+  Map<int, Map<String, dynamic>> nrfJamModeInfos = {};
 
   // ── SDR state (reactive, used by SettingsScreen via Consumer) ──
   bool sdrModeActive = false;
@@ -1890,9 +1896,28 @@ class BleProvider extends ChangeNotifier {
           if (d != null) {
             nrfJammerRunning = d['running'] == true;
             nrfJamMode = d['mode'] ?? 0;
+            nrfJamDwellTimeMs = d['dwellTimeMs'] ?? 0;
             nrfJamChannel = d['channel'] ?? 0;
           }
           _log('debug', 'NRF jam status', details: d.toString());
+          notifyListeners();
+          break;
+        case 'NrfJamModeConfig':
+          final d = data['data'] as Map<String, dynamic>?;
+          if (d != null) {
+            int cfgMode = d['mode'] ?? 0;
+            nrfJamModeConfigs[cfgMode] = d;
+          }
+          _log('debug', 'NRF jam mode config', details: d.toString());
+          notifyListeners();
+          break;
+        case 'NrfJamModeInfo':
+          final d = data['data'] as Map<String, dynamic>?;
+          if (d != null) {
+            int infoMode = d['mode'] ?? 0;
+            nrfJamModeInfos[infoMode] = d;
+          }
+          _log('debug', 'NRF jam mode info', details: d.toString());
           notifyListeners();
           break;
         case 'SdrStatus':

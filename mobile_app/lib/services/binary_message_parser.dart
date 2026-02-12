@@ -34,6 +34,8 @@ enum BinaryMessageType {
   nrfScanStatus(0xD3),      // Scan status / target list
   nrfSpectrumData(0xD4),    // Spectrum analyzer 126-channel levels (full 2.4 GHz ISM band)
   nrfJamStatus(0xD5),       // Jammer status update
+  nrfJamModeConfig(0xD6),   // Per-mode config response/update
+  nrfJamModeInfo(0xD7),     // Mode info (name, description, channels)
   // OTA notifications (0xE0-0xE2)
   otaProgress(0xE0),        // OTA write progress
   otaComplete(0xE1),        // OTA finished successfully
@@ -1075,16 +1077,80 @@ class BinaryMessageParser {
           };
 
         case BinaryMessageType.nrfJamStatus:
-          // [0xD5][running:1][mode:1][channel:1]
+          // [0xD5][running:1][mode:1][dwellLo:1][dwellHi:1]
+          // FW sends exactly 5 bytes. Old 4-byte format is also accepted.
           if (data.length < 4) return null;
+          {
+            int jamDwell = 0;
+            int jamCh = 0;
+            if (data.length >= 5) {
+              // New format: [running][mode][dwellLo][dwellHi][channel?]
+              jamDwell = data[3] | (data[4] << 8);
+              jamCh = data.length >= 6 ? data[5] : 0;
+            } else {
+              jamCh = data[3];
+            }
+            return {
+              'type': 'NrfJamStatus',
+              'data': {
+                'running': data[1] != 0,
+                'mode': data[2],
+                'dwellTimeMs': jamDwell,
+                'channel': jamCh,
+              },
+            };
+          }
+
+        case BinaryMessageType.nrfJamModeConfig:
+          // [0xD6][mode:1][pa:1][dr:1][dwellLo:1][dwellHi:1][flood:1][bursts:1]
+          if (data.length < 8) return null;
           return {
-            'type': 'NrfJamStatus',
+            'type': 'NrfJamModeConfig',
             'data': {
-              'running': data[1] != 0,
-              'mode': data[2],
-              'channel': data[3],
+              'mode': data[1],
+              'paLevel': data[2],
+              'dataRate': data[3],
+              'dwellTimeMs': data[4] | (data[5] << 8),
+              'useFlooding': data[6] != 0,
+              'floodBursts': data[7],
             },
           };
+
+        case BinaryMessageType.nrfJamModeInfo:
+          // [0xD7][mode][freqStartHi][freqStartLo][freqEndHi][freqEndLo]
+          //       [channelCount:1][nameLen:1][name...][descLen:1][desc...]
+          if (data.length < 9) return null;
+          {
+            int infoMode = data[1];
+            int freqStart = (data[2] << 8) | data[3];
+            int freqEnd = (data[4] << 8) | data[5];
+            int chCount = data[6];
+            int nLen = data[7];
+            String modeName = '';
+            String modeDesc = '';
+            int off = 8;
+            if (off + nLen <= data.length) {
+              modeName = String.fromCharCodes(data.sublist(off, off + nLen));
+              off += nLen;
+            }
+            if (off < data.length) {
+              int dLen = data[off++];
+              if (off + dLen <= data.length) {
+                modeDesc = String.fromCharCodes(data.sublist(off, off + dLen));
+              }
+            }
+            return {
+              'type': 'NrfJamModeInfo',
+              'data': {
+                'mode': infoMode,
+                'freqStartMHz': freqStart,
+                'freqEndMHz': freqEnd,
+                'channelCount': chCount,
+                'name': modeName,
+                'description': modeDesc,
+              },
+            };
+          }
 
         case BinaryMessageType.sdrStatus:
           // [0xC4][active:1][module:1][freqKhz:4LE][modulation:1] = 8 bytes
