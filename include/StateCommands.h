@@ -183,7 +183,7 @@ private:
     }
     
     // Receive settings update from app and persist
-    // Payload: [scannerRssi:int8][bruterPower:u8][delayLo:u8][delayHi:u8][bruterRepeats:u8]
+    // Payload: [scannerRssi:int8][bruterPower:u8][delayLo:u8][delayHi:u8][bruterRepeats:u8][radioPowerMod1:int8][radioPowerMod2:int8][cpuTempOffsetLo:u8][cpuTempOffsetHi:u8]
     static bool handleSettingsUpdate(const uint8_t* data, size_t len) {
         if (len < 5) {
             ESP_LOGW("StateCommands", "Insufficient data for settingsUpdate (%u < 5)", (unsigned)len);
@@ -217,14 +217,15 @@ private:
 
     // Send current persistent settings to all BLE clients.
     static void sendSettingsSync() {
-        uint8_t payload[8];
+        uint8_t payload[10];
         ConfigManager::buildSyncPayload(payload);
         ClientsManager::getInstance().notifyAllBinary(
             NotificationType::SettingsSync, payload, sizeof(payload));
-        ESP_LOGI("StateCommands", "SettingsSync sent: rssi=%d power=%d delay=%d reps=%d mod1=%d mod2=%d",
+        ESP_LOGI("StateCommands", "SettingsSync sent: rssi=%d power=%d delay=%d reps=%d mod1=%d mod2=%d tempOff=%d",
                  ConfigManager::settings.scannerRssi, ConfigManager::settings.bruterPower,
                  ConfigManager::settings.bruterDelay, ConfigManager::settings.bruterRepeats,
-                 ConfigManager::settings.radioPowerMod1, ConfigManager::settings.radioPowerMod2);
+                 ConfigManager::settings.radioPowerMod1, ConfigManager::settings.radioPowerMod2,
+                 ConfigManager::settings.cpuTempOffsetDeciC);
     }
 
     // Send current BLE device name to all clients.

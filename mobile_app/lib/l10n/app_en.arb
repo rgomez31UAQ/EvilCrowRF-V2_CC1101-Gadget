@@ -1141,6 +1141,8 @@
 
   "connectionStatus": "Connection Status",
   "debugControls": "Debug Controls",
+  "cpuTempOffset": "CPU Temp Offset",
+  "cpuTempOffsetDesc": "Adds an offset to the ESP32 internal temperature sensor (stored on device).",
   "clearCachedDevice": "Clear Cached Device",
   "refreshFiles": "Refresh Files",
   "activityLogs": "Activity Logs",

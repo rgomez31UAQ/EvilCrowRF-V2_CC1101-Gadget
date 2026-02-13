@@ -8,6 +8,7 @@
 // Maximum length for BLE device name (NimBLE limit is ~29, keep it safe)
 static constexpr size_t MAX_DEVICE_NAME_LEN = 20;
 static constexpr const char* DEFAULT_DEVICE_NAME = "EvilCrow_RF2";
+static constexpr size_t MAX_BUTTON_SIGNAL_PATH_LEN = 127;
 
 // Persistent device settings stored in /config.txt on LittleFS.
 // WiFi parameters removed — this project uses BLE only.
@@ -22,11 +23,16 @@ struct DeviceSettings {
     // HW Button actions persisted across reboots
     uint8_t button1Action;    // HwButtonAction enum index (0-6)
     uint8_t button2Action;    // HwButtonAction enum index (0-6)
+    uint8_t button1SignalPathType; // pathType for replay file (0-5)
+    uint8_t button2SignalPathType; // pathType for replay file (0-5)
+    char button1SignalPath[MAX_BUTTON_SIGNAL_PATH_LEN + 1];
+    char button2SignalPath[MAX_BUTTON_SIGNAL_PATH_LEN + 1];
     // NRF24 settings
     uint8_t nrfPaLevel;       // nRF24 PA level: 0=MIN, 1=LOW, 2=HIGH, 3=MAX
     uint8_t nrfDataRate;      // nRF24 data rate: 0=1MBPS, 1=2MBPS, 2=250KBPS
     uint8_t nrfChannel;       // nRF24 default channel (0-125)
     uint8_t nrfAutoRetransmit;// nRF24 auto-retransmit count (0-15)
+    int16_t cpuTempOffsetDeciC; // CPU temperature offset in deci-C (e.g. -200 = -20.0C)
     // BLE device name (user-configurable, persisted)
     char deviceName[MAX_DEVICE_NAME_LEN + 1];  // null-terminated
 };
@@ -47,10 +53,15 @@ class ConfigManager
         .radioPowerMod2 = 10,
         .button1Action  = 0,
         .button2Action  = 0,
+        .button1SignalPathType = 1,
+        .button2SignalPathType = 1,
+        .button1SignalPath = "",
+        .button2SignalPath = "",
         .nrfPaLevel     = 3,   // MAX by default
         .nrfDataRate    = 0,   // 1MBPS default
         .nrfChannel     = 76,  // Default channel 76
         .nrfAutoRetransmit = 5,
+        .cpuTempOffsetDeciC = -360,
         .deviceName     = "EvilCrow_RF2",
     };
 
@@ -85,10 +96,21 @@ class ConfigManager
             else if (key == "radio_power_mod2") settings.radioPowerMod2 = (int8_t)val.toInt();
             else if (key == "button1_action") settings.button1Action = (uint8_t)val.toInt();
             else if (key == "button2_action") settings.button2Action = (uint8_t)val.toInt();
+            else if (key == "button1_signal_path_type") settings.button1SignalPathType = (uint8_t)val.toInt();
+            else if (key == "button2_signal_path_type") settings.button2SignalPathType = (uint8_t)val.toInt();
+            else if (key == "button1_signal_path") {
+                strncpy(settings.button1SignalPath, val.c_str(), MAX_BUTTON_SIGNAL_PATH_LEN);
+                settings.button1SignalPath[MAX_BUTTON_SIGNAL_PATH_LEN] = '\0';
+            }
+            else if (key == "button2_signal_path") {
+                strncpy(settings.button2SignalPath, val.c_str(), MAX_BUTTON_SIGNAL_PATH_LEN);
+                settings.button2SignalPath[MAX_BUTTON_SIGNAL_PATH_LEN] = '\0';
+            }
             else if (key == "nrf_pa_level") settings.nrfPaLevel = (uint8_t)val.toInt();
             else if (key == "nrf_data_rate") settings.nrfDataRate = (uint8_t)val.toInt();
             else if (key == "nrf_channel") settings.nrfChannel = (uint8_t)val.toInt();
             else if (key == "nrf_auto_retransmit") settings.nrfAutoRetransmit = (uint8_t)val.toInt();
+            else if (key == "cpu_temp_offset_decic") settings.cpuTempOffsetDeciC = (int16_t)val.toInt();
             else if (key == "device_name") {
                 strncpy(settings.deviceName, val.c_str(), MAX_DEVICE_NAME_LEN);
                 settings.deviceName[MAX_DEVICE_NAME_LEN] = '\0';
@@ -112,22 +134,27 @@ class ConfigManager
         // Clamp button actions
         if (settings.button1Action > 6) settings.button1Action = 0;
         if (settings.button2Action > 6) settings.button2Action = 0;
+        if (settings.button1SignalPathType > 5) settings.button1SignalPathType = 1;
+        if (settings.button2SignalPathType > 5) settings.button2SignalPathType = 1;
         // Clamp NRF settings
         if (settings.nrfPaLevel > 3) settings.nrfPaLevel = 3;
         if (settings.nrfDataRate > 2) settings.nrfDataRate = 0;
         if (settings.nrfChannel > 125) settings.nrfChannel = 76;
         if (settings.nrfAutoRetransmit > 15) settings.nrfAutoRetransmit = 5;
+        if (settings.cpuTempOffsetDeciC < -500) settings.cpuTempOffsetDeciC = -500;
+        if (settings.cpuTempOffsetDeciC > 500) settings.cpuTempOffsetDeciC = 500;
         // Ensure device name is valid
         if (settings.deviceName[0] == '\0') {
             strncpy(settings.deviceName, DEFAULT_DEVICE_NAME, MAX_DEVICE_NAME_LEN);
             settings.deviceName[MAX_DEVICE_NAME_LEN] = '\0';
         }
 
-        ESP_LOGI("ConfigManager", "Settings loaded: baud=%d rssi=%d power=%d delay=%d reps=%d mod1=%d mod2=%d btn1=%d btn2=%d nrf_pa=%d nrf_dr=%d nrf_ch=%d name=%s",
+        ESP_LOGI("ConfigManager", "Settings loaded: baud=%d rssi=%d power=%d delay=%d reps=%d mod1=%d mod2=%d btn1=%d btn2=%d b1PathType=%d b2PathType=%d nrf_pa=%d nrf_dr=%d nrf_ch=%d name=%s",
                  settings.serialBaudRate, settings.scannerRssi,
                  settings.bruterPower, settings.bruterDelay, settings.bruterRepeats,
                  settings.radioPowerMod1, settings.radioPowerMod2,
                  settings.button1Action, settings.button2Action,
+             settings.button1SignalPathType, settings.button2SignalPathType,
                  settings.nrfPaLevel, settings.nrfDataRate, settings.nrfChannel,
                  settings.deviceName);
     }
@@ -146,10 +173,15 @@ class ConfigManager
         f.printf("radio_power_mod2=%d\n", settings.radioPowerMod2);
         f.printf("button1_action=%d\n",  settings.button1Action);
         f.printf("button2_action=%d\n",  settings.button2Action);
+        f.printf("button1_signal_path_type=%d\n", settings.button1SignalPathType);
+        f.printf("button2_signal_path_type=%d\n", settings.button2SignalPathType);
+        f.printf("button1_signal_path=%s\n", settings.button1SignalPath);
+        f.printf("button2_signal_path=%s\n", settings.button2SignalPath);
         f.printf("nrf_pa_level=%d\n",    settings.nrfPaLevel);
         f.printf("nrf_data_rate=%d\n",   settings.nrfDataRate);
         f.printf("nrf_channel=%d\n",     settings.nrfChannel);
         f.printf("nrf_auto_retransmit=%d\n", settings.nrfAutoRetransmit);
+        f.printf("cpu_temp_offset_decic=%d\n", settings.cpuTempOffsetDeciC);
         f.printf("device_name=%s\n", settings.deviceName);
         f.close();
         ESP_LOGI("ConfigManager", "Settings saved to /config.txt");
@@ -161,7 +193,7 @@ class ConfigManager
     static void applyToRuntime();
 
     /// Update settings from a BLE binary payload and persist.
-    /// Payload: [scannerRssi:int8][bruterPower:u8][bruterDelayLo:u8][bruterDelayHi:u8][bruterRepeats:u8][radioPowerMod1:int8][radioPowerMod2:int8]
+    /// Payload: [scannerRssi:int8][bruterPower:u8][bruterDelayLo:u8][bruterDelayHi:u8][bruterRepeats:u8][radioPowerMod1:int8][radioPowerMod2:int8][cpuTempOffsetLo:u8][cpuTempOffsetHi:u8]
     /// Returns true on success. Accepts 5 bytes (legacy) or 7 bytes (with radio power).
     static bool updateFromBle(const uint8_t* data, size_t len)
     {
@@ -175,6 +207,10 @@ class ConfigManager
             settings.radioPowerMod1 = (int8_t)data[5];
             settings.radioPowerMod2 = (int8_t)data[6];
         }
+        // Optional CPU temperature offset (deci-C)
+        if (len >= 9) {
+            settings.cpuTempOffsetDeciC = (int16_t)(data[7] | (data[8] << 8));
+        }
         // Clamp values
         if (settings.bruterPower > 7) settings.bruterPower = 7;
         if (settings.bruterDelay < 1) settings.bruterDelay = 1;
@@ -185,14 +221,16 @@ class ConfigManager
         if (settings.radioPowerMod1 > 10)  settings.radioPowerMod1 = 10;
         if (settings.radioPowerMod2 < -30) settings.radioPowerMod2 = -30;
         if (settings.radioPowerMod2 > 10)  settings.radioPowerMod2 = 10;
+        if (settings.cpuTempOffsetDeciC < -500) settings.cpuTempOffsetDeciC = -500;
+        if (settings.cpuTempOffsetDeciC > 500) settings.cpuTempOffsetDeciC = 500;
         saveSettings();
         applyToRuntime();
         return true;
     }
 
     /// Build the binary settings payload for BLE sync notification.
-    /// Output: [0xC0][scannerRssi:int8][bruterPower:u8][bruterDelayLo:u8][bruterDelayHi:u8][bruterRepeats:u8][radioPowerMod1:int8][radioPowerMod2:int8]
-    /// Returns 8 bytes.
+    /// Output: [0xC0][scannerRssi:int8][bruterPower:u8][bruterDelayLo:u8][bruterDelayHi:u8][bruterRepeats:u8][radioPowerMod1:int8][radioPowerMod2:int8][cpuTempOffsetLo:u8][cpuTempOffsetHi:u8]
+    /// Returns 10 bytes.
     static void buildSyncPayload(uint8_t* out)
     {
         out[0] = 0xC0;  // MSG_SETTINGS_SYNC
@@ -203,13 +241,24 @@ class ConfigManager
         out[5] = settings.bruterRepeats;
         out[6] = (uint8_t)settings.radioPowerMod1;
         out[7] = (uint8_t)settings.radioPowerMod2;
+        out[8] = (uint8_t)(settings.cpuTempOffsetDeciC & 0xFF);
+        out[9] = (uint8_t)((settings.cpuTempOffsetDeciC >> 8) & 0xFF);
     }
 
     /// Remove current config and recreate defaults.
     static void resetConfigToDefault()
     {
         LittleFS.remove("/config.txt");
-        settings = {115200, -80, 7, 10, 4, 10, 10, 0, 0, 3, 0, 76, 5, "EvilCrow_RF2"};
+        settings = {
+            115200, -80, 7, 10, 4,
+            10, 10,
+            0, 0,
+            1, 1,
+            "", "",
+            3, 0, 76, 5,
+            -200,
+            "EvilCrow_RF2"
+        };
         saveSettings();
     }
 

@@ -19,7 +19,7 @@ class _DirectoryPickerDialog extends StatefulWidget {
 }
 
 class __DirectoryPickerDialogState extends State<_DirectoryPickerDialog> {
-  int _selectedPathType = 0;
+  int _selectedPathType = 5;
   List<DirectoryTreeNode> _directories = [];
   bool _isLoading = false;
   String? _errorMessage;
@@ -71,6 +71,7 @@ class __DirectoryPickerDialogState extends State<_DirectoryPickerDialog> {
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
     final pathTypeNames = {
+      5: 'Root',
       0: l10n.records,
       1: l10n.captured,
       2: l10n.presets,

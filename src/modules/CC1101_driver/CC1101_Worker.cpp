@@ -11,6 +11,7 @@
 #include "SubFileParser.h"  // For preset byte arrays
 #include "core/ble/CommandHandler.h"
 #include "DeviceTasks.h"
+#include "ConfigManager.h"
 #include "esp_log.h"
 
 static const char* TAG = "CC1101Worker";
@@ -1234,6 +1235,10 @@ void CC1101Worker::sendHeartbeat() {
     status.module1Mode = static_cast<uint8_t>(moduleStates[1]);
     status.numRegisters = numRegs;
     status.freeHeap = ESP.getFreeHeap();
+    status.cpuTempDeciC = static_cast<int16_t>(temperatureRead() * 10.0f)
+        + ConfigManager::settings.cpuTempOffsetDeciC;
+    status.core0Mhz = static_cast<uint16_t>(ESP.getCpuFreqMHz());
+    status.core1Mhz = static_cast<uint16_t>(ESP.getCpuFreqMHz());
     
     // Read all CC1101 registers for both modules
     moduleCC1101State[0].readAllConfigRegisters(status.module0Registers, numRegs);

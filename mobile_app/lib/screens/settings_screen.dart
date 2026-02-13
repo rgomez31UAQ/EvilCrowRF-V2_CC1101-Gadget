@@ -12,6 +12,7 @@ import '../widgets/transmit_file_dialog.dart';
 import '../services/update_service.dart';
 import '../theme/app_colors.dart';
 import 'debug_screen.dart';
+import 'files_screen.dart';
 import 'ota_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -1828,6 +1829,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         label: AppLocalizations.of(context)!.button1Gpio34,
                         action: settingsProvider.button1Action,
                         color: AppColors.primaryAccent,
+                        replayPath: settingsProvider.button1ReplayPath,
+                        onPickReplayFile: () => _pickReplaySubFile(context, settingsProvider, 1),
                         onChanged: (action) {
                           settingsProvider.setButton1Action(action);
                         },
@@ -1840,6 +1843,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         label: AppLocalizations.of(context)!.button2Gpio35,
                         action: settingsProvider.button2Action,
                         color: AppColors.warning,
+                        replayPath: settingsProvider.button2ReplayPath,
+                        onPickReplayFile: () => _pickReplaySubFile(context, settingsProvider, 2),
                         onChanged: (action) {
                           settingsProvider.setButton2Action(action);
                         },
@@ -1890,6 +1895,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     required String label,
     required HwButtonAction action,
     required Color color,
+    required String? replayPath,
+    required VoidCallback onPickReplayFile,
     required ValueChanged<HwButtonAction> onChanged,
   }) {
     return Column(
@@ -1952,19 +1959,85 @@ class _SettingsScreenState extends State<SettingsScreen> {
             );
           }).toList(),
         ),
+        if (action == HwButtonAction.replayLast) ...[
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  replayPath == null || replayPath.isEmpty
+                      ? 'No .sub file selected'
+                      : replayPath,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: AppColors.secondaryText, fontSize: 11),
+                ),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: onPickReplayFile,
+                icon: const Icon(Icons.folder_open, size: 16),
+                label: const Text('Select .sub'),
+              ),
+            ],
+          ),
+        ],
       ],
     );
+  }
+
+  Future<void> _pickReplaySubFile(
+    BuildContext context,
+    SettingsProvider settingsProvider,
+    int buttonId,
+  ) async {
+    final result = await Navigator.of(context).push<Map<String, dynamic>>(
+      MaterialPageRoute(
+        builder: (_) => const FilesScreen(
+          pickMode: true,
+          allowedExtensions: {'sub'},
+        ),
+      ),
+    );
+
+    if (result == null) return;
+
+    final path = result['path']?.toString();
+    final pathType = (result['pathType'] as int?) ?? 1;
+    if (path == null || path.isEmpty) return;
+
+    if (buttonId == 1) {
+      await settingsProvider.setButton1ReplayFile(path, pathType);
+    } else {
+      await settingsProvider.setButton2ReplayFile(path, pathType);
+    }
   }
 
   void _sendButtonConfig(BuildContext context, BleProvider bleProvider,
       SettingsProvider settingsProvider) async {
     try {
       final cmd1 = FirmwareBinaryProtocol.createHwButtonConfigCommand(
-          1, settingsProvider.button1Action.index);
+      1,
+      settingsProvider.button1Action.index,
+      replayPathType: settingsProvider.button1Action == HwButtonAction.replayLast
+        ? settingsProvider.button1ReplayPathType
+        : null,
+      replayPath: settingsProvider.button1Action == HwButtonAction.replayLast
+        ? settingsProvider.button1ReplayPath
+        : null,
+      );
       await bleProvider.sendBinaryCommand(cmd1);
 
       final cmd2 = FirmwareBinaryProtocol.createHwButtonConfigCommand(
-          2, settingsProvider.button2Action.index);
+      2,
+      settingsProvider.button2Action.index,
+      replayPathType: settingsProvider.button2Action == HwButtonAction.replayLast
+        ? settingsProvider.button2ReplayPathType
+        : null,
+      replayPath: settingsProvider.button2Action == HwButtonAction.replayLast
+        ? settingsProvider.button2ReplayPath
+        : null,
+      );
       await bleProvider.sendBinaryCommand(cmd2);
 
       if (context.mounted) {

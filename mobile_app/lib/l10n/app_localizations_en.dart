@@ -1722,6 +1722,13 @@ class AppLocalizationsEn extends AppLocalizations {
   String get debugControls => 'Debug Controls';
 
   @override
+  String get cpuTempOffset => 'CPU Temp Offset';
+
+  @override
+  String get cpuTempOffsetDesc =>
+      'Adds an offset to the ESP32 internal temperature sensor (stored on device).';
+
+  @override
   String get clearCachedDevice => 'Clear Cached Device';
 
   @override

@@ -44,6 +44,10 @@ class SettingsProvider with ChangeNotifier {
   int _bruterDelayMs = 10; // Default inter-frame delay in ms
   HwButtonAction _button1Action = HwButtonAction.none;
   HwButtonAction _button2Action = HwButtonAction.none;
+  String? _button1ReplayPath;
+  int _button1ReplayPathType = 1;
+  String? _button2ReplayPath;
+  int _button2ReplayPathType = 1;
   // NRF24 settings
   int _nrfPaLevel = 3;       // 0=MIN, 1=LOW, 2=HIGH, 3=MAX
   int _nrfDataRate = 0;      // 0=1MBPS, 1=2MBPS, 2=250KBPS
@@ -54,6 +58,10 @@ class SettingsProvider with ChangeNotifier {
   int get bruterDelayMs => _bruterDelayMs;
   HwButtonAction get button1Action => _button1Action;
   HwButtonAction get button2Action => _button2Action;
+  String? get button1ReplayPath => _button1ReplayPath;
+  int get button1ReplayPathType => _button1ReplayPathType;
+  String? get button2ReplayPath => _button2ReplayPath;
+  int get button2ReplayPathType => _button2ReplayPathType;
   int get nrfPaLevel => _nrfPaLevel;
   int get nrfDataRate => _nrfDataRate;
   int get nrfChannel => _nrfChannel;
@@ -73,6 +81,10 @@ class SettingsProvider with ChangeNotifier {
     _button2Action = HwButtonAction.values[
       (prefs.getInt('hwButton2Action') ?? 0).clamp(0, HwButtonAction.values.length - 1)
     ];
+    _button1ReplayPath = prefs.getString('hwButton1ReplayPath');
+    _button1ReplayPathType = (prefs.getInt('hwButton1ReplayPathType') ?? 1).clamp(0, 5);
+    _button2ReplayPath = prefs.getString('hwButton2ReplayPath');
+    _button2ReplayPathType = (prefs.getInt('hwButton2ReplayPathType') ?? 1).clamp(0, 5);
     // NRF24 settings
     _nrfPaLevel = (prefs.getInt('nrfPaLevel') ?? 3).clamp(0, 3);
     _nrfDataRate = (prefs.getInt('nrfDataRate') ?? 0).clamp(0, 2);
@@ -106,6 +118,32 @@ class SettingsProvider with ChangeNotifier {
     _button2Action = action;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('hwButton2Action', action.index);
+    notifyListeners();
+  }
+
+  Future<void> setButton1ReplayFile(String? path, int pathType) async {
+    _button1ReplayPath = path;
+    _button1ReplayPathType = pathType.clamp(0, 5);
+    final prefs = await SharedPreferences.getInstance();
+    if (path == null || path.isEmpty) {
+      await prefs.remove('hwButton1ReplayPath');
+    } else {
+      await prefs.setString('hwButton1ReplayPath', path);
+    }
+    await prefs.setInt('hwButton1ReplayPathType', _button1ReplayPathType);
+    notifyListeners();
+  }
+
+  Future<void> setButton2ReplayFile(String? path, int pathType) async {
+    _button2ReplayPath = path;
+    _button2ReplayPathType = pathType.clamp(0, 5);
+    final prefs = await SharedPreferences.getInstance();
+    if (path == null || path.isEmpty) {
+      await prefs.remove('hwButton2ReplayPath');
+    } else {
+      await prefs.setString('hwButton2ReplayPath', path);
+    }
+    await prefs.setInt('hwButton2ReplayPathType', _button2ReplayPathType);
     notifyListeners();
   }
 

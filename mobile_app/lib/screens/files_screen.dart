@@ -17,7 +17,14 @@ import '../theme/app_colors.dart';
 import 'file_viewer_screen.dart';
 
 class FilesScreen extends StatefulWidget {
-  const FilesScreen({super.key});
+  final bool pickMode;
+  final Set<String>? allowedExtensions;
+
+  const FilesScreen({
+    super.key,
+    this.pickMode = false,
+    this.allowedExtensions,
+  });
 
   @override
   State<FilesScreen> createState() => _FilesScreenState();
@@ -108,7 +115,7 @@ class _FilesScreenState extends State<FilesScreen> {
                             if (selected.first) {
                               bleProvider.switchPathType(4); // LittleFS
                             } else {
-                              bleProvider.switchPathType(0); // SD Records
+                              bleProvider.switchPathType(5); // SD Root
                             }
                           },
                           style: ButtonStyle(
@@ -267,6 +274,24 @@ class _FilesScreenState extends State<FilesScreen> {
         fullPath = file.name;
       } else {
         fullPath = '${bleProvider.currentPath}/${file.name}';
+      }
+
+      if (widget.pickMode) {
+        final allowed = widget.allowedExtensions;
+        if (allowed != null && allowed.isNotEmpty) {
+          final dot = file.name.lastIndexOf('.');
+          final ext = dot == -1 ? '' : file.name.substring(dot + 1).toLowerCase();
+          if (!allowed.contains(ext)) {
+            _showInfoSnackBar('Allowed: ${allowed.map((e) => '.${e.toLowerCase()}').join(', ')}');
+            return;
+          }
+        }
+        Navigator.of(context).pop({
+          'path': fullPath,
+          'pathType': bleProvider.currentPathType,
+          'name': file.name,
+        });
+        return;
       }
       
       
@@ -878,6 +903,8 @@ class _FilesScreenState extends State<FilesScreen> {
         return l10n.temp;
       case 4:
         return l10n.internal;
+      case 5:
+        return 'Root';
       default:
         return l10n.unknown;
     }
@@ -983,6 +1010,23 @@ class _FilesScreenState extends State<FilesScreen> {
                 ),
               ),
               const PopupMenuDivider(),
+              PopupMenuItem<int>(
+                value: 5,
+                child: Row(
+                  children: [
+                    const Icon(Icons.sd_card, size: 20),
+                    const SizedBox(width: 8),
+                    const Text(
+                      'Root',
+                      style: TextStyle(color: AppColors.primaryText),
+                    ),
+                    if (bleProvider.currentPathType == 5)
+                      const Spacer(),
+                    if (bleProvider.currentPathType == 5)
+                      const Icon(Icons.check, size: 20, color: AppColors.primaryText),
+                  ],
+                ),
+              ),
               PopupMenuItem<int>(
                 value: 4,
                 child: Row(

@@ -602,13 +602,17 @@ class BinaryModeSwitch {
   }
 }
 
-/// Status message with CC1101 registers (102 bytes)
-/// Structure: [type:1][mode0:1][mode1:1][numRegs:1][heap:4][regs0:47][regs1:47]
+/// Status message with CC1101 registers.
+/// Legacy: [type:1][mode0:1][mode1:1][numRegs:1][heap:4][regs0:47][regs1:47] (102 bytes)
+/// Extended: [type:1][mode0:1][mode1:1][numRegs:1][heap:4][cpuTempDeciC:2][core0Mhz:2][core1Mhz:2][regs0:47][regs1:47] (108 bytes)
 class BinaryStatus {
   final int module0Mode;
   final int module1Mode;
   final int numRegisters;
   final int freeHeap;
+  final double? cpuTempC;
+  final int? core0Mhz;
+  final int? core1Mhz;
   final List<int> module0Registers;
   final List<int> module1Registers;
 
@@ -617,26 +621,44 @@ class BinaryStatus {
     required this.module1Mode,
     required this.numRegisters,
     required this.freeHeap,
+    this.cpuTempC,
+    this.core0Mhz,
+    this.core1Mhz,
     required this.module0Registers,
     required this.module1Registers,
   });
 
   factory BinaryStatus.parse(Uint8List data) {
     if (data.length < 102) {
-      throw Exception('Invalid BinaryStatus data length: ${data.length}, expected 102');
+      throw Exception('Invalid BinaryStatus data length: ${data.length}, expected >= 102');
     }
 
-    // Parse little-endian uint32 for freeHeap (offset 4, length 4)
+    final hasCpuTelemetry = data.length >= 108;
+    final registersStart = hasCpuTelemetry ? 14 : 8;
+
     final byteData = ByteData.sublistView(data);
     final freeHeap = byteData.getUint32(4, Endian.little);
+
+    double? cpuTempC;
+    int? core0Mhz;
+    int? core1Mhz;
+    if (hasCpuTelemetry) {
+      final deciC = byteData.getInt16(8, Endian.little);
+      cpuTempC = deciC / 10.0;
+      core0Mhz = byteData.getUint16(10, Endian.little);
+      core1Mhz = byteData.getUint16(12, Endian.little);
+    }
 
     return BinaryStatus(
       module0Mode: data[1],
       module1Mode: data[2],
       numRegisters: data[3],
       freeHeap: freeHeap,
-      module0Registers: data.sublist(8, 55).toList(),  // 8..54 = 47 bytes
-      module1Registers: data.sublist(55, 102).toList(), // 55..101 = 47 bytes
+      cpuTempC: cpuTempC,
+      core0Mhz: core0Mhz,
+      core1Mhz: core1Mhz,
+      module0Registers: data.sublist(registersStart, registersStart + 47).toList(),
+      module1Registers: data.sublist(registersStart + 47, registersStart + 94).toList(),
     );
   }
 
@@ -657,6 +679,9 @@ class BinaryStatus {
     return {
       'device': {
         'freeHeap': freeHeap,
+        if (cpuTempC != null) 'cpuTempC': cpuTempC,
+        if (core0Mhz != null) 'core0Mhz': core0Mhz,
+        if (core1Mhz != null) 'core1Mhz': core1Mhz,
       },
       'cc1101': [
         {
@@ -940,9 +965,15 @@ class BinaryMessageParser {
           };
 
         case BinaryMessageType.settingsSync:
-          // [0xC0][scannerRssi:int8][bruterPower:u8][delayLo:u8][delayHi:u8][bruterRepeats:u8][radioPowerMod1:int8][radioPowerMod2:int8] = 8 bytes
+          // [0xC0][scannerRssi:int8][bruterPower:u8][delayLo:u8][delayHi:u8][bruterRepeats:u8][radioPowerMod1:int8][radioPowerMod2:int8][cpuTempOffsetLo:u8][cpuTempOffsetHi:u8] = 10 bytes
           // Legacy 6-byte payloads are still accepted (radio power defaults to 10 dBm)
           if (data.length < 6) return null;
+          int? cpuTempOffsetDeciC;
+          if (data.length >= 10) {
+            int raw = data[8] | (data[9] << 8);
+            if (raw >= 32768) raw -= 65536;
+            cpuTempOffsetDeciC = raw;
+          }
           return {
             'type': 'SettingsSync',
             'data': {
@@ -952,6 +983,7 @@ class BinaryMessageParser {
               'bruterRepeats': data[5],
               'radioPowerMod1': data.length >= 7 ? (data[6] >= 128 ? data[6] - 256 : data[6]) : 10,
               'radioPowerMod2': data.length >= 8 ? (data[7] >= 128 ? data[7] - 256 : data[7]) : 10,
+              if (cpuTempOffsetDeciC != null) 'cpuTempOffsetDeciC': cpuTempOffsetDeciC,
             },
           };
 

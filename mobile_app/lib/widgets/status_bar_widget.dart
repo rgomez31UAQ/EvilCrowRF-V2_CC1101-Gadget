@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../l10n/app_localizations.dart';
 import '../providers/ble_provider.dart';
 import '../providers/notification_provider.dart';
+import '../providers/settings_provider.dart';
 import '../theme/app_colors.dart';
 import 'quick_connect_widget.dart';
 import 'module_status_widget.dart';
@@ -67,14 +68,6 @@ class _StatusBarWidgetState extends State<StatusBarWidget> {
                   Expanded(
                     child: _buildNotificationArea(context),
                   ),
-                  
-                  // Expand icon
-                  Icon(
-                    _isExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
-                    size: 20,
-                    color: Theme.of(context).textTheme.bodyMedium?.color?.withOpacity(0.6),
-                  ),
-                  const SizedBox(width: 8),
                 ],
               ),
             ),
@@ -232,6 +225,19 @@ class _StatusBarWidgetState extends State<StatusBarWidget> {
               // 7. Memory Status
               if (bleProvider.isConnected && bleProvider.freeHeap != null)
                 _MemoryStatusIcon(freeHeap: bleProvider.freeHeap!),
+
+              const SizedBox(width: 6),
+
+              // 8. CPU Temperature + (debug) core clock info
+              if (bleProvider.isConnected)
+                Consumer<SettingsProvider>(
+                  builder: (context, settingsProvider, _) => _CpuStatusIcon(
+                    temperatureC: bleProvider.cpuTempC,
+                    core0Mhz: bleProvider.core0Mhz,
+                    core1Mhz: bleProvider.core1Mhz,
+                    showCoreClocks: settingsProvider.debugMode,
+                  ),
+                ),
             ],
           ),
         );
@@ -282,6 +288,7 @@ class _StatusBarWidgetState extends State<StatusBarWidget> {
         return InkWell(
           onTap: () => _showNotificationList(context, notificationProvider),
           child: Container(
+            alignment: Alignment.centerRight,
             margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             child: Text(
@@ -675,6 +682,60 @@ class _NotificationListItem extends StatelessWidget {
     } else {
       return '${difference.inDays}${l10n.daysAgo}';
     }
+  }
+}
+
+class _CpuStatusIcon extends StatelessWidget {
+  final double? temperatureC;
+  final int? core0Mhz;
+  final int? core1Mhz;
+  final bool showCoreClocks;
+
+  const _CpuStatusIcon({
+    required this.temperatureC,
+    required this.core0Mhz,
+    required this.core1Mhz,
+    required this.showCoreClocks,
+  });
+
+  Color _tempColor() {
+    final temp = temperatureC;
+    if (temp == null) return AppColors.primaryText;
+    if (temp < 60.0) return AppColors.success;
+    if (temp < 75.0) return AppColors.warning;
+    return AppColors.error;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _tempColor();
+    final tempText = temperatureC == null ? '--.-°C' : '${temperatureC!.toStringAsFixed(1)}°C';
+    final c0 = core0Mhz ?? 0;
+    final c1 = core1Mhz ?? c0;
+
+    String tooltip = 'CPU $tempText';
+    if (showCoreClocks) {
+      tooltip += ' | C0: ${c0}MHz | C1: ${c1}MHz';
+    }
+
+    return Tooltip(
+      message: tooltip,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.thermostat, size: 18, color: color),
+          const SizedBox(width: 2),
+          Text(
+            showCoreClocks ? 'C0:${c0} C1:${c1}' : tempText,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 

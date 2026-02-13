@@ -81,14 +81,19 @@ struct BinaryModeSwitch {
     uint8_t previousMode;
 };
 
-// Status message with CC1101 registers (102 bytes)
-// 1+1+1+1+4+47+47 = 102 bytes total
+// Status message with CC1101 registers + CPU telemetry
+// Legacy payload: 102 bytes
+// New payload: 108 bytes (adds cpuTempDeciC + core0Mhz + core1Mhz)
+// 1+1+1+1+4+2+2+2+47+47 = 108 bytes total
 struct BinaryStatus {
     uint8_t messageType = MSG_STATUS;
     uint8_t module0Mode;
     uint8_t module1Mode;
     uint8_t numRegisters;           // 0x2E (46 registers)
     uint32_t freeHeap;
+    int16_t cpuTempDeciC;           // CPU temperature in deci-°C (e.g. 456 => 45.6°C)
+    uint16_t core0Mhz;              // Core 0 clock in MHz
+    uint16_t core1Mhz;              // Core 1 clock in MHz
     uint8_t module0Registers[47];   // All CC1101 registers for module 0
     uint8_t module1Registers[47];   // All CC1101 registers for module 1
 };

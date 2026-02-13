@@ -1731,6 +1731,13 @@ class AppLocalizationsRu extends AppLocalizations {
   String get debugControls => 'Управление отладкой';
 
   @override
+  String get cpuTempOffset => 'Смещение температуры CPU';
+
+  @override
+  String get cpuTempOffsetDesc =>
+      'Добавляет смещение к внутреннему датчику температуры ESP32 (сохраняется на устройстве).';
+
+  @override
   String get clearCachedDevice => 'Очистить кэш устройства';
 
   @override

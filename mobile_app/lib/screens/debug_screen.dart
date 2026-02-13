@@ -279,6 +279,58 @@ class _DebugScreenState extends State<DebugScreen> {
                 ),
                 
                 const SizedBox(height: 16),
+
+                // CPU Temperature Offset (Debug)
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          AppLocalizations.of(context)!.cpuTempOffset,
+                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          AppLocalizations.of(context)!.cpuTempOffsetDesc,
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Colors.grey[700],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          '${(bleProvider.cpuTempOffsetDeciC / 10.0).toStringAsFixed(1)} C',
+                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Slider(
+                          value: (bleProvider.cpuTempOffsetDeciC / 10.0).clamp(-50.0, 50.0),
+                          min: -50,
+                          max: 50,
+                          divisions: 200,
+                          label: '${(bleProvider.cpuTempOffsetDeciC / 10.0).toStringAsFixed(1)} C',
+                          onChanged: (value) {
+                            final deciC = (value * 10).round();
+                            bleProvider.sendSettingsToDevice(cpuTempOffsetDeciC: deciC);
+                          },
+                        ),
+                        if (!bleProvider.isConnected)
+                          Text(
+                            AppLocalizations.of(context)!.connectToDeviceToApply,
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Colors.grey[600],
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                
+                const SizedBox(height: 16),
                 
                 // Logs Section
                 Card(

@@ -54,7 +54,7 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
   int _hopStop = 80;
   int _hopStep = 2;
   int _liveDwellMs = 5;          // Live dwell slider value
-  bool _dwellLive = false;       // True when jammer is running → slider sends live
+
 
   // MouseJack filter
   bool _hideUnknown = false;
@@ -103,7 +103,7 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
       await bleProvider.sendBinaryCommand(cmd);
       await Future.delayed(const Duration(milliseconds: 500));
       bleProvider.nrfInitialized = true;
-      bleProvider.notifyListeners();
+      bleProvider.nrfNotify();
       setState(() => _initializing = false);
     } catch (e) {
       setState(() {
@@ -120,7 +120,7 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
     final cmd = FirmwareBinaryProtocol.createNrfScanStartCommand();
     await bleProvider.sendBinaryCommand(cmd);
     bleProvider.nrfScanning = true;
-    bleProvider.notifyListeners();
+    bleProvider.nrfNotify();
   }
 
   Future<void> _stopScan() async {
@@ -128,7 +128,7 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
     final cmd = FirmwareBinaryProtocol.createNrfScanStopCommand();
     await bleProvider.sendBinaryCommand(cmd);
     bleProvider.nrfScanning = false;
-    bleProvider.notifyListeners();
+    bleProvider.nrfNotify();
   }
 
   Future<void> _attackString(int targetIndex) async {
@@ -139,7 +139,7 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
     );
     await bleProvider.sendBinaryCommand(cmd);
     bleProvider.nrfAttacking = true;
-    bleProvider.notifyListeners();
+    bleProvider.nrfNotify();
   }
 
   Future<void> _attackDucky(int targetIndex) async {
@@ -150,7 +150,7 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
     );
     await bleProvider.sendBinaryCommand(cmd);
     bleProvider.nrfAttacking = true;
-    bleProvider.notifyListeners();
+    bleProvider.nrfNotify();
   }
 
   Future<void> _stopAttack() async {
@@ -158,7 +158,7 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
     final cmd = FirmwareBinaryProtocol.createNrfAttackStopCommand();
     await bleProvider.sendBinaryCommand(cmd);
     bleProvider.nrfAttacking = false;
-    bleProvider.notifyListeners();
+    bleProvider.nrfNotify();
   }
 
   Future<void> _requestScanStatus() async {
@@ -174,7 +174,7 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
     final cmd = FirmwareBinaryProtocol.createNrfSpectrumStartCommand();
     await bleProvider.sendBinaryCommand(cmd);
     bleProvider.nrfSpectrumRunning = true;
-    bleProvider.notifyListeners();
+    bleProvider.nrfNotify();
   }
 
   Future<void> _stopSpectrum() async {
@@ -183,7 +183,7 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
     await bleProvider.sendBinaryCommand(cmd);
     bleProvider.nrfSpectrumRunning = false;
     bleProvider.nrfSpectrumLevels = List.filled(126, 0);
-    bleProvider.notifyListeners();
+    bleProvider.nrfNotify();
   }
 
   // ── Jammer Commands ─────────────────────────────────────────
@@ -204,11 +204,10 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
     }
     await bleProvider.sendBinaryCommand(cmd);
     bleProvider.nrfJammerRunning = true;
-    bleProvider.notifyListeners();
+    bleProvider.nrfNotify();
     // Read current dwell from cached config for the live slider
     final cachedCfg = bleProvider.nrfJamModeConfigs[_jamMode];
     setState(() {
-      _dwellLive = true;
       _liveDwellMs = cachedCfg?['dwellTimeMs'] ?? 5;
     });
   }
@@ -218,8 +217,7 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
     final cmd = FirmwareBinaryProtocol.createNrfJamStopCommand();
     await bleProvider.sendBinaryCommand(cmd);
     bleProvider.nrfJammerRunning = false;
-    bleProvider.notifyListeners();
-    setState(() => _dwellLive = false);
+    bleProvider.nrfNotify();
   }
 
   // ── Jammer Per-Mode Commands ────────────────────────────────
@@ -256,7 +254,7 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
     await bleProvider.sendBinaryCommand(cmd);
     // Clear local cache so it gets refreshed
     bleProvider.nrfJamModeConfigs.clear();
-    bleProvider.notifyListeners();
+    bleProvider.nrfNotify();
   }
 
   // ── Build ───────────────────────────────────────────────────
@@ -436,7 +434,8 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
                               _hideUnknown = v;
                               _selectedTargetIndex = -1;
                             }),
-                            activeColor: AppColors.primaryAccent,
+                            activeTrackColor: AppColors.primaryAccent.withValues(alpha: 0.5),
+                            activeThumbColor: AppColors.primaryAccent,
                             materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                           ),
                         ),
@@ -878,7 +877,7 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
               icon: Icons.speed,
               child: Column(
                 children: [
-                  Text('${_liveDwellMs} ms',
+                  Text('$_liveDwellMs ms',
                       style: TextStyle(
                           color: AppColors.primaryAccent,
                           fontSize: 18,
@@ -1111,7 +1110,8 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
                             style: TextStyle(color: AppColors.secondaryText, fontSize: 12)),
                         Switch(
                           value: flood,
-                          activeColor: AppColors.primaryAccent,
+                          activeTrackColor: AppColors.primaryAccent.withValues(alpha: 0.5),
+                          activeThumbColor: AppColors.primaryAccent,
                           onChanged: (v) => setDialogState(() => flood = v),
                         ),
                       ],
@@ -1378,10 +1378,12 @@ class _SpectrumPainter extends CustomPainter {
     if (levels.isEmpty) return;
 
     final barWidth = size.width / levels.length;
-    const maxLevel = 125.0;
+    // EMA max output is 100 (hit_pct capped at 100, EMA converges to it).
+    // Using 100.0 so a fully saturated channel fills the entire height.
+    const maxLevel = 100.0;
 
     for (int i = 0; i < levels.length; i++) {
-      final level = levels[i].toDouble();
+      final level = levels[i].toDouble().clamp(0.0, maxLevel);
       final barHeight = (level / maxLevel) * size.height;
       final x = i * barWidth;
 
@@ -1412,5 +1414,13 @@ class _SpectrumPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _SpectrumPainter oldDelegate) => true;
+  bool shouldRepaint(covariant _SpectrumPainter oldDelegate) {
+    // Avoid unnecessary repaints when levels haven't changed
+    if (identical(levels, oldDelegate.levels)) return false;
+    if (levels.length != oldDelegate.levels.length) return true;
+    for (int i = 0; i < levels.length; i++) {
+      if (levels[i] != oldDelegate.levels[i]) return true;
+    }
+    return false;
+  }
 }

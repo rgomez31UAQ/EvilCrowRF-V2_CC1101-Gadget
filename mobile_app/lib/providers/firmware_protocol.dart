@@ -949,11 +949,35 @@ class FirmwareBinaryProtocol {
   // ═══════════════════════════════════════════════════════════
 
   /// Configure hardware button action (0x40)
-  /// Payload: [buttonId (1 or 2)][actionId (0-6)]
-  static Uint8List createHwButtonConfigCommand(int buttonId, int actionId) {
-    final payload = Uint8List(2);
-    payload[0] = buttonId.clamp(1, 2);
-    payload[1] = actionId.clamp(0, 6);
+  /// Payload basic: [buttonId (1|2)][actionId (0-6)]
+  /// Payload extended (ReplayLast): [buttonId][actionId][pathType][pathLen][path...]
+  static Uint8List createHwButtonConfigCommand(
+    int buttonId,
+    int actionId, {
+    int? replayPathType,
+    String? replayPath,
+  }) {
+    final normalizedButton = buttonId.clamp(1, 2);
+    final normalizedAction = actionId.clamp(0, 6);
+
+    final hasReplayData = replayPath != null && replayPath.isNotEmpty && replayPathType != null;
+    if (!hasReplayData) {
+      final payload = Uint8List(2);
+      payload[0] = normalizedButton;
+      payload[1] = normalizedAction;
+      return _createEnhancedCommand(MSG_HW_BUTTON_CONFIG, payload);
+    }
+
+    final pathBytes = Uint8List.fromList(replayPath.codeUnits);
+    final safePathLen = pathBytes.length.clamp(0, 255);
+    final payload = Uint8List(4 + safePathLen);
+    payload[0] = normalizedButton;
+    payload[1] = normalizedAction;
+    payload[2] = replayPathType.clamp(0, 5);
+    payload[3] = safePathLen;
+    for (int i = 0; i < safePathLen; i++) {
+      payload[4 + i] = pathBytes[i];
+    }
     return _createEnhancedCommand(MSG_HW_BUTTON_CONFIG, payload);
   }
 

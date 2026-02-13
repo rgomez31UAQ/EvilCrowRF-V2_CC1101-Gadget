@@ -30,6 +30,7 @@
 #include "ConfigManager.h"
 #include "core/device_controls/DeviceControls.h"
 #include "modules/nrf/NrfJammer.h"
+#include "modules/CC1101_driver/CC1101_Worker.h"
 #include "esp_log.h"
 
 /// Available actions for hardware buttons.
@@ -78,7 +79,7 @@ public:
         bool btn1Pressed = (digitalRead(BUTTON1) == LOW);
         if (btn1Pressed && !btn1WasPressed && (now - lastBtn1Press > debounceMs)) {
             lastBtn1Press = now;
-            executeAction(button1Action);
+            executeAction(button1Action, 1);
         }
         btn1WasPressed = btn1Pressed;
 
@@ -86,7 +87,7 @@ public:
         bool btn2Pressed = (digitalRead(BUTTON2) == LOW);
         if (btn2Pressed && !btn2WasPressed && (now - lastBtn2Press > debounceMs)) {
             lastBtn2Press = now;
-            executeAction(button2Action);
+            executeAction(button2Action, 2);
         }
         btn2WasPressed = btn2Pressed;
     }
@@ -96,7 +97,8 @@ private:
     static inline HwButtonAction button2Action = HwButtonAction::None;
 
     /// Handle 0x40: Set button action
-    /// Payload: [buttonId (1 or 2)][actionId (0-6)]
+    /// Payload basic: [buttonId (1|2)][actionId (0-6)]
+    /// Payload extended: [buttonId][actionId][pathType][pathLen][path...]
     static bool handleButtonConfig(const uint8_t* data, size_t len) {
         if (len < 2) {
             ESP_LOGW("ButtonCmd", "Payload too short (need 2 bytes)");
@@ -126,6 +128,40 @@ private:
             ConfigManager::settings.button2Action = actionId;
         }
 
+        // Optional replay file configuration
+        if (len >= 4) {
+            uint8_t pathType = data[2];
+            uint8_t pathLen = data[3];
+            if (pathType > 5) {
+                ESP_LOGW("ButtonCmd", "Invalid replay pathType: %u", pathType);
+                return false;
+            }
+            if (pathLen > MAX_BUTTON_SIGNAL_PATH_LEN) {
+                ESP_LOGW("ButtonCmd", "Replay path too long: %u", pathLen);
+                return false;
+            }
+            if (len < (size_t)(4 + pathLen)) {
+                ESP_LOGW("ButtonCmd", "Replay payload truncated");
+                return false;
+            }
+
+            if (buttonId == 1) {
+                ConfigManager::settings.button1SignalPathType = pathType;
+                memset(ConfigManager::settings.button1SignalPath, 0, sizeof(ConfigManager::settings.button1SignalPath));
+                if (pathLen > 0) {
+                    memcpy(ConfigManager::settings.button1SignalPath, data + 4, pathLen);
+                    ConfigManager::settings.button1SignalPath[pathLen] = '\0';
+                }
+            } else {
+                ConfigManager::settings.button2SignalPathType = pathType;
+                memset(ConfigManager::settings.button2SignalPath, 0, sizeof(ConfigManager::settings.button2SignalPath));
+                if (pathLen > 0) {
+                    memcpy(ConfigManager::settings.button2SignalPath, data + 4, pathLen);
+                    ConfigManager::settings.button2SignalPath[pathLen] = '\0';
+                }
+            }
+        }
+
         // Persist to flash so the action survives reboot
         ConfigManager::saveSettings();
         ESP_LOGI("ButtonCmd", "Button %u -> action %u (saved to flash)", buttonId, actionId);
@@ -139,7 +175,7 @@ private:
     }
 
     /// Execute the action assigned to a button.
-    static void executeAction(HwButtonAction action) {
+    static void executeAction(HwButtonAction action, uint8_t buttonId) {
         switch (action) {
             case HwButtonAction::None:
                 break;
@@ -163,9 +199,36 @@ private:
                 break;
 
             case HwButtonAction::ReplayLast:
-                // TODO: Implement replay last signal
-                ESP_LOGI("ButtonCmd", "Replay last — not yet implemented");
-                DeviceControls::ledBlink(3, 80);
+                {
+                    const char* configuredPath = (buttonId == 1)
+                        ? ConfigManager::settings.button1SignalPath
+                        : ConfigManager::settings.button2SignalPath;
+                    int configuredPathType = (buttonId == 1)
+                        ? ConfigManager::settings.button1SignalPathType
+                        : ConfigManager::settings.button2SignalPathType;
+
+                    if (configuredPath[0] == '\0') {
+                        ESP_LOGW("ButtonCmd", "Replay requested but no .sub file configured for button %u", buttonId);
+                        DeviceControls::ledBlink(3, 80);
+                        break;
+                    }
+
+                    int module = CC1101Worker::findFirstIdleModule();
+                    if (module < 0) {
+                        ESP_LOGW("ButtonCmd", "No idle CC1101 module available for replay");
+                        DeviceControls::ledBlink(4, 60);
+                        break;
+                    }
+
+                    bool queued = CC1101Worker::transmit(module, std::string(configuredPath), 1, configuredPathType);
+                    if (queued) {
+                        ESP_LOGI("ButtonCmd", "Replay queued from button %u: module=%d pathType=%d path=%s",
+                                 buttonId, module, configuredPathType, configuredPath);
+                    } else {
+                        ESP_LOGE("ButtonCmd", "Replay queue failed from button %u", buttonId);
+                        DeviceControls::ledBlink(4, 60);
+                    }
+                }
                 break;
 
             case HwButtonAction::ToggleLed:
