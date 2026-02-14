@@ -59,7 +59,17 @@ void NrfSpectrum::getLevels(uint8_t* levels) {
 }
 
 void NrfSpectrum::scanOnce() {
-    // Must be called with SPI mutex held
+    // Must be called with SPI mutex held.
+    //
+    // RPD (Received Power Detector) is a binary flag: 1 = signal above
+    // -64 dBm at the chip input.  With a PA+LNA module (E01-ML01SP2) the
+    // effective antenna threshold drops to roughly -90 dBm.
+    //
+    // Fast-decay EMA: (level + rpd * 100) / 2
+    //   - One RPD hit brings the bar to 50, a second to 75, third to 87...
+    //   - Decay: 100 → 50 → 25 → 12 → 6 (drops quickly when signal gone)
+    // This gives a responsive, real-time spectrum display.
+
     NrfModule::ceLow();
 
     for (int i = 0; i < NRF_SPECTRUM_CHANNELS; i++) {
@@ -76,8 +86,7 @@ void NrfSpectrum::scanOnce() {
         int rpd = NrfModule::testRPD() ? 1 : 0;
 
         // Fast-decay EMA: (level + rpd * 100) / 2
-        // Decay ratio ~50% per sweep (vs old 75%), so bars drop in 3-4 sweeps
-        // instead of 10+. Matches the CC1101 analyzer behavior.
+        // Decay ratio ~50% per sweep — bars drop in 3-4 sweeps.
         channelLevels_[i] = (uint8_t)((channelLevels_[i] + rpd * 100) / 2);
     }
 }

@@ -56,6 +56,8 @@ enum BinaryMessageType : uint8_t {
     MSG_NRF_SCAN_STATUS     = 0xD3, // Scan status + target list response
     MSG_NRF_SPECTRUM_DATA   = 0xD4, // 80-channel spectrum levels
     MSG_NRF_JAM_STATUS      = 0xD5, // Jammer status update
+    MSG_NRF_JAM_MODE_CONFIG = 0xD6, // Per-mode config response/update
+    MSG_NRF_JAM_MODE_INFO   = 0xD7, // Mode info (channels, description)
     
     // SDR mode events
     MSG_SDR_STATUS        = 0xC4,  // Device → App: SDR mode status
@@ -69,6 +71,15 @@ enum BinaryMessageType : uint8_t {
 
     // Device identity
     MSG_DEVICE_NAME   = 0xC7, // Current BLE device name: [nameLen:1][name...]
+
+    // HW button config sync (sent on GetState)
+    MSG_HW_BUTTON_STATUS = 0xC8, // [btn1Action:1][btn2Action:1][btn1PathType:1][btn2PathType:1]
+
+    // SD card storage info (sent on GetState)
+    MSG_SD_STATUS     = 0xC9, // [mounted:1][totalMB:2LE][freeMB:2LE]
+
+    // nRF24 module status (sent on GetState)
+    MSG_NRF_STATUS    = 0xCA, // [present:1][initialized:1][activeState:1]
 };
 
 // Mode switch notification (4 bytes)
@@ -79,14 +90,19 @@ struct BinaryModeSwitch {
     uint8_t previousMode;
 };
 
-// Status message with CC1101 registers (102 bytes)
-// 1+1+1+1+4+47+47 = 102 bytes total
+// Status message with CC1101 registers + CPU telemetry
+// Legacy payload: 102 bytes
+// New payload: 108 bytes (adds cpuTempDeciC + core0Mhz + core1Mhz)
+// 1+1+1+1+4+2+2+2+47+47 = 108 bytes total
 struct BinaryStatus {
     uint8_t messageType = MSG_STATUS;
     uint8_t module0Mode;
     uint8_t module1Mode;
     uint8_t numRegisters;           // 0x2E (46 registers)
     uint32_t freeHeap;
+    int16_t cpuTempDeciC;           // CPU temperature in deci-°C (e.g. 456 => 45.6°C)
+    uint16_t core0Mhz;              // Core 0 clock in MHz
+    uint16_t core1Mhz;              // Core 1 clock in MHz
     uint8_t module0Registers[47];   // All CC1101 registers for module 0
     uint8_t module1Registers[47];   // All CC1101 registers for module 1
 };
@@ -267,6 +283,37 @@ struct BinarySdrRawDataHeader {
     uint16_t seqNum;       // Sequence number for ordering
     uint8_t  dataLen;      // Number of data bytes following
     // uint8_t data[];      // Variable: raw demodulated bytes from CC1101 FIFO
+};
+
+// HW button status (5 bytes)
+// Sent on BLE connect (GetState) to sync app with current button config.
+// [0xC8][btn1Action:1][btn2Action:1][btn1PathType:1][btn2PathType:1]
+struct BinaryHwButtonStatus {
+    uint8_t messageType = MSG_HW_BUTTON_STATUS;
+    uint8_t btn1Action;      // HwButtonAction enum index (0-6)
+    uint8_t btn2Action;      // HwButtonAction enum index (0-6)
+    uint8_t btn1PathType;    // Path type for replay (0-5)
+    uint8_t btn2PathType;    // Path type for replay (0-5)
+};
+
+// SD card status (6 bytes)
+// Sent on BLE connect (GetState) to show storage info in app.
+// [0xC9][mounted:1][totalMB:2LE][freeMB:2LE]
+struct BinarySdStatus {
+    uint8_t  messageType = MSG_SD_STATUS;
+    uint8_t  mounted;      // 0 = not mounted, 1 = mounted
+    uint16_t totalMB;      // Total size in MB
+    uint16_t freeMB;       // Free space in MB
+};
+
+// nRF24 module status (4 bytes)
+// Sent on BLE connect (GetState) to show nRF24 state in Device Status.
+// [0xCA][present:1][initialized:1][activeState:1]
+struct BinaryNrfStatus {
+    uint8_t messageType = MSG_NRF_STATUS;
+    uint8_t present;       // 0 = not present, 1 = present
+    uint8_t initialized;   // 0 = not initialized, 1 = initialized
+    uint8_t activeState;   // 0=idle, 1=jamming, 2=scanning, 3=attacking, 4=spectrum
 };
 
 #pragma pack(pop)

@@ -100,7 +100,7 @@ class BleProvider extends ChangeNotifier {
   static const List<int> evilCrowDeviceId = [0x01, 0x02, 0x03, 0x04];
   List<FileItem> fileList = [];
   String currentPath = '/';
-  int currentPathType = 0; // 0=/DATA/RECORDS, 1=/DATA/SIGNALS, 2=/DATA/PRESETS, 3=/DATA/TEMP, 4=INTERNAL (LittleFS)
+  int currentPathType = 5; // 0=/DATA/RECORDS, 1=/DATA/SIGNALS, 2=/DATA/PRESETS, 3=/DATA/TEMP, 4=INTERNAL (LittleFS), 5=SD Root
   bool isLoadingFiles = false;
   double fileListProgress = 0.0; // Progress for file list loading (0.0 to 1.0)
   
@@ -113,6 +113,9 @@ class BleProvider extends ChangeNotifier {
   // Device status
   Map<String, dynamic>? deviceStatus;
   int? freeHeap;
+  double? cpuTempC;
+  int? core0Mhz;
+  int? core1Mhz;
   List<Map<String, dynamic>>? cc1101Modules;
   
   // Recorded files
@@ -131,14 +134,41 @@ class BleProvider extends ChangeNotifier {
   bool nrfJammerRunning = false;
   int nrfJamMode = 0;
   int nrfJamChannel = 0;
+  int nrfJamDwellTimeMs = 0;
   List<Map<String, dynamic>> nrfTargets = [];
   List<int> nrfSpectrumLevels = List.filled(126, 0);
+
+  // Per-mode jammer config cache (populated by 0xD6 responses)
+  Map<int, Map<String, dynamic>> nrfJamModeConfigs = {};
+  // Per-mode jammer info cache (populated by 0xD7 responses)
+  Map<int, Map<String, dynamic>> nrfJamModeInfos = {};
+
+  /// Trigger UI rebuild after NRF state fields are modified externally.
+  ///
+  /// NRF screen manages provider state fields directly for simplicity;
+  /// use this instead of calling notifyListeners() from outside the class.
+  void nrfNotify() => notifyListeners();
 
   // ── SDR state (reactive, used by SettingsScreen via Consumer) ──
   bool sdrModeActive = false;
   int sdrSubMode = 0;
   double sdrFrequencyMHz = 433.92;
   int sdrModulation = 2; // ASK/OOK default
+
+  // ── SD card storage info (populated by 0xC9 on GetState) ──
+  bool sdMounted = false;
+  int sdTotalMB = 0;
+  int sdFreeMB = 0;
+
+  // ── nRF24 hardware status (populated by 0xCA on GetState) ──
+  bool nrfPresent = false;
+
+  // ── HW button config from device (populated by 0xC8 on GetState) ──
+  // -1 = not yet received from device
+  int deviceBtn1Action = -1;
+  int deviceBtn2Action = -1;
+  int deviceBtn1PathType = -1;
+  int deviceBtn2PathType = -1;
 
   // ── OTA state (reactive, used by OtaScreen via Consumer) ──
   int otaProgress = 0;
@@ -250,6 +280,7 @@ class BleProvider extends ChangeNotifier {
   BleProvider() {
     _initializeBle();
     _loadKnownDevice();
+    _loadTempOffsetPref();
   }
 
   Future<void> _initializeBle() async {
@@ -280,6 +311,15 @@ class BleProvider extends ChangeNotifier {
       }
     } catch (e) {
       print('Error loading known device: $e');
+    }
+  }
+
+  Future<void> _loadTempOffsetPref() async {
+    try {
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      _cpuTempOffsetDeciC = (prefs.getInt('cpuTempOffsetDeciC') ?? -200).clamp(-500, 500);
+    } catch (e) {
+      print('Error loading cpu temp offset: $e');
     }
   }
   
@@ -1039,8 +1079,8 @@ class BleProvider extends ChangeNotifier {
 
   /// Switch to a different path type (directory)
   Future<void> switchPathType(int pathType) async {
-    if (pathType < 0 || pathType > 4) {
-      _log('error', 'Invalid pathType', details: 'pathType must be 0-4, got $pathType');
+    if (pathType < 0 || pathType > 5) {
+      _log('error', 'Invalid pathType', details: 'pathType must be 0-5, got $pathType');
       return;
     }
     
@@ -1098,6 +1138,8 @@ class BleProvider extends ChangeNotifier {
       '/DATA/SIGNALS',  // 1
       '/DATA/PRESETS',  // 2
       '/DATA/TEMP',     // 3
+      '/',              // 4
+      '/',              // 5
     ];
     
     if (pathType < 0 || pathType >= basePaths.length) {
@@ -1171,6 +1213,8 @@ class BleProvider extends ChangeNotifier {
       pathType = 2;
     } else if (basePath == '/DATA/TEMP') {
       pathType = 3;
+    } else if (basePath == '/SDROOT') {
+      pathType = 5;
     } else if (basePath == '/') {
       pathType = 4; // LittleFS internal storage
     }
@@ -1268,8 +1312,12 @@ class BleProvider extends ChangeNotifier {
         return '/DATA/PRESETS';
       case 3:
         return '/DATA/TEMP';
+      case 4:
+        return '/';
+      case 5:
+        return '/SDROOT';
       default:
-        return '/DATA/RECORDS';
+        return '/';
     }
   }
   
@@ -1844,6 +1892,15 @@ class BleProvider extends ChangeNotifier {
         case 'BatteryStatus':
           _handleBatteryStatus(data['data']);
           break;
+        case 'HwButtonStatus':
+          _handleHwButtonStatus(data['data']);
+          break;
+        case 'SdStatus':
+          _handleSdStatus(data['data']);
+          break;
+        case 'NrfModuleStatus':
+          _handleNrfModuleStatus(data['data']);
+          break;
         // ── NRF24 notifications ──
         case 'NrfDeviceFound':
           final d = data['data'] as Map?;
@@ -1890,9 +1947,28 @@ class BleProvider extends ChangeNotifier {
           if (d != null) {
             nrfJammerRunning = d['running'] == true;
             nrfJamMode = d['mode'] ?? 0;
+            nrfJamDwellTimeMs = d['dwellTimeMs'] ?? 0;
             nrfJamChannel = d['channel'] ?? 0;
           }
           _log('debug', 'NRF jam status', details: d.toString());
+          notifyListeners();
+          break;
+        case 'NrfJamModeConfig':
+          final d = data['data'] as Map<String, dynamic>?;
+          if (d != null) {
+            int cfgMode = d['mode'] ?? 0;
+            nrfJamModeConfigs[cfgMode] = d;
+          }
+          _log('debug', 'NRF jam mode config', details: d.toString());
+          notifyListeners();
+          break;
+        case 'NrfJamModeInfo':
+          final d = data['data'] as Map<String, dynamic>?;
+          if (d != null) {
+            int infoMode = d['mode'] ?? 0;
+            nrfJamModeInfos[infoMode] = d;
+          }
+          _log('debug', 'NRF jam mode info', details: d.toString());
           notifyListeners();
           break;
         case 'SdrStatus':
@@ -3078,6 +3154,8 @@ class BleProvider extends ChangeNotifier {
   int get radioPowerMod1 => _radioPowerMod1;
   int _radioPowerMod2 = 10;
   int get radioPowerMod2 => _radioPowerMod2;
+  int _cpuTempOffsetDeciC = -200;
+  int get cpuTempOffsetDeciC => _cpuTempOffsetDeciC;
   bool _settingsSynced = false;
   bool get settingsSynced => _settingsSynced;
 
@@ -3363,9 +3441,16 @@ class BleProvider extends ChangeNotifier {
     _bruterRepeats = data['bruterRepeats'] ?? 4;
     _radioPowerMod1 = data['radioPowerMod1'] ?? 10;
     _radioPowerMod2 = data['radioPowerMod2'] ?? 10;
+    final tempOffset = data['cpuTempOffsetDeciC'];
+    if (tempOffset is num) {
+      _cpuTempOffsetDeciC = tempOffset.toInt().clamp(-500, 500);
+      SharedPreferences.getInstance().then((prefs) {
+        prefs.setInt('cpuTempOffsetDeciC', _cpuTempOffsetDeciC);
+      });
+    }
     _settingsSynced = true;
 
-    _log('info', 'Settings synced from device: rssi=$_scannerRssi power=$_bruterPower delay=$_bruterDelayMs reps=$_bruterRepeats mod1=$_radioPowerMod1 mod2=$_radioPowerMod2');
+    _log('info', 'Settings synced from device: rssi=$_scannerRssi power=$_bruterPower delay=$_bruterDelayMs reps=$_bruterRepeats mod1=$_radioPowerMod1 mod2=$_radioPowerMod2 tempOff=$_cpuTempOffsetDeciC');
     notifyListeners();
   }
 
@@ -3399,6 +3484,40 @@ class BleProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Handle HW button config (0xC8) — received on GetState.
+  /// Updates local state so the Settings screen can show current button config.
+  void _handleHwButtonStatus(Map<String, dynamic> data) {
+    deviceBtn1Action = data['btn1Action'] ?? 0;
+    deviceBtn2Action = data['btn2Action'] ?? 0;
+    deviceBtn1PathType = data['btn1PathType'] ?? 0;
+    deviceBtn2PathType = data['btn2PathType'] ?? 0;
+    _log('info', 'HwButtonStatus: btn1=$deviceBtn1Action btn2=$deviceBtn2Action');
+    notifyListeners();
+  }
+
+  /// Handle SD card status (0xC9) — received on GetState.
+  void _handleSdStatus(Map<String, dynamic> data) {
+    sdMounted = data['mounted'] ?? false;
+    sdTotalMB = data['totalMB'] ?? 0;
+    sdFreeMB = data['freeMB'] ?? 0;
+    _log('info', 'SdStatus: mounted=$sdMounted total=${sdTotalMB}MB free=${sdFreeMB}MB');
+    notifyListeners();
+  }
+
+  /// Handle nRF24 module status (0xCA) — received on GetState.
+  void _handleNrfModuleStatus(Map<String, dynamic> data) {
+    nrfPresent = data['present'] ?? false;
+    nrfInitialized = data['initialized'] ?? false;
+    // activeState: 0=idle, 1=jamming, 2=scanning, 3=attacking, 4=spectrum
+    int state = data['activeState'] ?? 0;
+    nrfJammerRunning = (state == 1);
+    nrfScanning = (state == 2);
+    nrfAttacking = (state == 3);
+    nrfSpectrumRunning = (state == 4);
+    _log('info', 'NrfModuleStatus: present=$nrfPresent init=$nrfInitialized state=$state');
+    notifyListeners();
+  }
+
   /// Send updated settings to the device (0xC1).
   /// Payload: [0xAA][cmd=0xC1][5 bytes settings data][checksum]
   Future<void> sendSettingsToDevice({
@@ -3408,6 +3527,7 @@ class BleProvider extends ChangeNotifier {
     int? bruterRepeats,
     int? radioPowerMod1,
     int? radioPowerMod2,
+    int? cpuTempOffsetDeciC,
   }) async {
     // Update local state first
     if (scannerRssi != null) _scannerRssi = scannerRssi;
@@ -3416,6 +3536,15 @@ class BleProvider extends ChangeNotifier {
     if (bruterRepeats != null) _bruterRepeats = bruterRepeats.clamp(1, 10);
     if (radioPowerMod1 != null) _radioPowerMod1 = radioPowerMod1.clamp(-30, 10);
     if (radioPowerMod2 != null) _radioPowerMod2 = radioPowerMod2.clamp(-30, 10);
+    if (cpuTempOffsetDeciC != null) {
+      _cpuTempOffsetDeciC = cpuTempOffsetDeciC.clamp(-500, 500);
+      try {
+        SharedPreferences prefs = await SharedPreferences.getInstance();
+        await prefs.setInt('cpuTempOffsetDeciC', _cpuTempOffsetDeciC);
+      } catch (e) {
+        _log('warning', 'Failed to store cpu temp offset: $e');
+      }
+    }
 
     if (!isConnected || txCharacteristic == null) {
       _log('warning', 'Settings saved locally only (not connected)');
@@ -3423,8 +3552,8 @@ class BleProvider extends ChangeNotifier {
       return;
     }
 
-    // Build binary command: 7-byte payload
-    final payload = Uint8List(7);
+    // Build binary command: 9-byte payload
+    final payload = Uint8List(9);
     payload[0] = _scannerRssi < 0 ? (_scannerRssi + 256) & 0xFF : _scannerRssi; // int8_t
     payload[1] = _bruterPower;
     payload[2] = _bruterDelayMs & 0xFF;
@@ -3432,10 +3561,12 @@ class BleProvider extends ChangeNotifier {
     payload[4] = _bruterRepeats;
     payload[5] = _radioPowerMod1 < 0 ? (_radioPowerMod1 + 256) & 0xFF : _radioPowerMod1;
     payload[6] = _radioPowerMod2 < 0 ? (_radioPowerMod2 + 256) & 0xFF : _radioPowerMod2;
+    payload[7] = _cpuTempOffsetDeciC & 0xFF;
+    payload[8] = (_cpuTempOffsetDeciC >> 8) & 0xFF;
 
     final command = FirmwareBinaryProtocol.createSettingsUpdateCommand(payload);
     await sendBinaryCommand(command);
-    _log('command', 'Settings sent to device: rssi=$_scannerRssi power=$_bruterPower delay=$_bruterDelayMs reps=$_bruterRepeats mod1=$_radioPowerMod1 mod2=$_radioPowerMod2');
+    _log('command', 'Settings sent to device: rssi=$_scannerRssi power=$_bruterPower delay=$_bruterDelayMs reps=$_bruterRepeats mod1=$_radioPowerMod1 mod2=$_radioPowerMod2 tempOff=$_cpuTempOffsetDeciC');
     notifyListeners();
   }
 
@@ -3571,6 +3702,12 @@ class BleProvider extends ChangeNotifier {
     if (actualData['device'] != null) {
       deviceStatus = actualData['device'];
       freeHeap = actualData['device']['freeHeap'];
+      final dynamic t = actualData['device']['cpuTempC'];
+      cpuTempC = t is num ? t.toDouble() : null;
+      final dynamic c0 = actualData['device']['core0Mhz'];
+      final dynamic c1 = actualData['device']['core1Mhz'];
+      core0Mhz = c0 is num ? c0.toInt() : null;
+      core1Mhz = c1 is num ? c1.toInt() : null;
     }
     
     if (actualData['cc1101'] != null) {

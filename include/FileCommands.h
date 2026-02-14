@@ -46,7 +46,7 @@ private:
 
     /**
      * Returns the appropriate filesystem for the given pathType.
-     * pathType 0-3 use SD card, pathType 4 uses LittleFS (internal flash).
+     * pathType 0-3 and 5 use SD card, pathType 4 uses LittleFS (internal flash).
      */
     static fs::FS& getFS(uint8_t pathType) {
         if (pathType == 4) return LittleFS;
@@ -73,13 +73,13 @@ private:
 
     /**
      * Builds base path from pathType
-     * @param pathType 0=RECORDS, 1=SIGNALS, 2=PRESETS, 3=TEMP, 4=INTERNAL (LittleFS root)
+     * @param pathType 0=RECORDS, 1=SIGNALS, 2=PRESETS, 3=TEMP, 4=INTERNAL (LittleFS root), 5=SD root
      * @param buffer buffer to receive result
      */
     static void buildBasePath(uint8_t pathType, PathBuffer& buffer) {
         buffer.clear();
-        if (pathType == 4) {
-            // LittleFS internal storage - root path
+        if (pathType == 4 || pathType == 5) {
+            // Root-based storage (LittleFS for 4, SD root for 5)
             return;
         }
         buffer.append("/DATA/");
@@ -94,7 +94,7 @@ private:
     
     /**
      * Builds full path from pathType and relative path
-     * @param pathType 0=RECORDS, 1=SIGNALS, 2=PRESETS, 3=TEMP, 4=INTERNAL
+     * @param pathType 0=RECORDS, 1=SIGNALS, 2=PRESETS, 3=TEMP, 4=INTERNAL, 5=SD root
      * @param relativePath relative path (may be empty or "/")
      * @param pathLen length of relative path
      * @param buffer buffer to receive result
@@ -102,8 +102,8 @@ private:
     static void buildFullPath(uint8_t pathType, const char* relativePath, size_t pathLen, PathBuffer& buffer) {
         buildBasePath(pathType, buffer);
 
-        // For LittleFS (pathType 4), base path is empty so start with "/"
-        if (pathType == 4 && buffer.size() == 0) {
+        // For root-based storages (pathType 4/5), base path is empty so start with "/"
+        if ((pathType == 4 || pathType == 5) && buffer.size() == 0) {
             buffer.append("/");
         }
         
@@ -285,8 +285,8 @@ public:
                 dirPathWithoutSlash.append(pathStr, pathStrLen);
             }
             
-            // Create directory if it doesn't exist (SD only, LittleFS dirs are implicit)
-            if (pathType != 4 && !SD.exists(dirPathWithoutSlash.c_str())) {
+            // Create directory if it doesn't exist (only dedicated SD folders 0..3)
+            if (pathType <= 3 && !SD.exists(dirPathWithoutSlash.c_str())) {
                 const char* dirPathStr = dirPathWithoutSlash.c_str();
                 size_t dirPathLen = strlen(dirPathStr);
                 static PathBuffer currentPath;

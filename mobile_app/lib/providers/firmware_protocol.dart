@@ -949,11 +949,35 @@ class FirmwareBinaryProtocol {
   // ═══════════════════════════════════════════════════════════
 
   /// Configure hardware button action (0x40)
-  /// Payload: [buttonId (1 or 2)][actionId (0-6)]
-  static Uint8List createHwButtonConfigCommand(int buttonId, int actionId) {
-    final payload = Uint8List(2);
-    payload[0] = buttonId.clamp(1, 2);
-    payload[1] = actionId.clamp(0, 6);
+  /// Payload basic: [buttonId (1|2)][actionId (0-6)]
+  /// Payload extended (ReplayLast): [buttonId][actionId][pathType][pathLen][path...]
+  static Uint8List createHwButtonConfigCommand(
+    int buttonId,
+    int actionId, {
+    int? replayPathType,
+    String? replayPath,
+  }) {
+    final normalizedButton = buttonId.clamp(1, 2);
+    final normalizedAction = actionId.clamp(0, 6);
+
+    final hasReplayData = replayPath != null && replayPath.isNotEmpty && replayPathType != null;
+    if (!hasReplayData) {
+      final payload = Uint8List(2);
+      payload[0] = normalizedButton;
+      payload[1] = normalizedAction;
+      return _createEnhancedCommand(MSG_HW_BUTTON_CONFIG, payload);
+    }
+
+    final pathBytes = Uint8List.fromList(replayPath.codeUnits);
+    final safePathLen = pathBytes.length.clamp(0, 255);
+    final payload = Uint8List(4 + safePathLen);
+    payload[0] = normalizedButton;
+    payload[1] = normalizedAction;
+    payload[2] = replayPathType.clamp(0, 5);
+    payload[3] = safePathLen;
+    for (int i = 0; i < safePathLen; i++) {
+      payload[4 + i] = pathBytes[i];
+    }
     return _createEnhancedCommand(MSG_HW_BUTTON_CONFIG, payload);
   }
 
@@ -963,6 +987,12 @@ class FirmwareBinaryProtocol {
 
   // NRF24 settings command ID — uses extended settings update
   static const int MSG_NRF_SETTINGS = 0x41;
+
+  // ── NRF24 Jammer Per-Mode Commands (0x42-0x45) ──────────────
+  static const int MSG_NRF_JAM_SET_DWELL = 0x42;
+  static const int MSG_NRF_JAM_MODE_CFG  = 0x43;
+  static const int MSG_NRF_JAM_MODE_INFO = 0x44;
+  static const int MSG_NRF_JAM_RESET_CFG = 0x45;
 
   /// Send nRF24 settings to device (0x41)
   /// Payload: [paLevel:1][dataRate:1][channel:1][autoRetransmit:1]
@@ -974,6 +1004,54 @@ class FirmwareBinaryProtocol {
     payload[2] = channel.clamp(0, 125);
     payload[3] = autoRetransmit.clamp(0, 15);
     return _createEnhancedCommand(MSG_NRF_SETTINGS, payload);
+  }
+
+  /// Change jammer dwell time live (0x42)
+  /// Payload: [dwellLo:1][dwellHi:1]
+  static Uint8List createNrfJamSetDwellCommand(int dwellTimeMs) {
+    final payload = Uint8List(2);
+    payload[0] = dwellTimeMs & 0xFF;
+    payload[1] = (dwellTimeMs >> 8) & 0xFF;
+    return _createEnhancedCommand(MSG_NRF_JAM_SET_DWELL, payload);
+  }
+
+  /// Get per-mode jammer config (0x43 GET)
+  /// Payload: [mode:1]
+  /// Response: MSG_NRF_JAM_MODE_CONFIG notification
+  static Uint8List createNrfJamModeConfigGetCommand(int mode) {
+    final payload = Uint8List(1);
+    payload[0] = mode.clamp(0, 11);
+    return _createEnhancedCommand(MSG_NRF_JAM_MODE_CFG, payload);
+  }
+
+  /// Set per-mode jammer config (0x43 SET)
+  /// Payload: [mode:1][pa:1][dr:1][dwellLo:1][dwellHi:1][flood:1][bursts:1]
+  static Uint8List createNrfJamModeConfigSetCommand(
+      int mode, int paLevel, int dataRate, int dwellTimeMs,
+      bool useFlooding, int floodBursts) {
+    final payload = Uint8List(7);
+    payload[0] = mode.clamp(0, 11);
+    payload[1] = paLevel.clamp(0, 3);
+    payload[2] = dataRate.clamp(0, 2);
+    payload[3] = dwellTimeMs & 0xFF;
+    payload[4] = (dwellTimeMs >> 8) & 0xFF;
+    payload[5] = useFlooding ? 1 : 0;
+    payload[6] = floodBursts.clamp(1, 10);
+    return _createEnhancedCommand(MSG_NRF_JAM_MODE_CFG, payload);
+  }
+
+  /// Get mode info — name, description, channels (0x44)
+  /// Payload: [mode:1]
+  /// Response: MSG_NRF_JAM_MODE_INFO notification
+  static Uint8List createNrfJamModeInfoCommand(int mode) {
+    final payload = Uint8List(1);
+    payload[0] = mode.clamp(0, 11);
+    return _createEnhancedCommand(MSG_NRF_JAM_MODE_INFO, payload);
+  }
+
+  /// Reset all jam configs to optimal defaults (0x45)
+  static Uint8List createNrfJamResetConfigCommand() {
+    return _createEnhancedCommand(MSG_NRF_JAM_RESET_CFG, Uint8List(0));
   }
 
   // ═══════════════════════════════════════════════════════════

@@ -1127,6 +1127,8 @@
 
   "connectionStatus": "Состояние подключения",
   "debugControls": "Управление отладкой",
+  "cpuTempOffset": "Смещение температуры CPU",
+  "cpuTempOffsetDesc": "Добавляет смещение к внутреннему датчику температуры ESP32 (сохраняется на устройстве).",
   "clearCachedDevice": "Очистить кэш устройства",
   "refreshFiles": "Обновить файлы",
   "activityLogs": "Журнал активности",

@@ -19,11 +19,15 @@
  *   0x2A = NRF_JAM_START      — Start jammer (mode in payload)
  *   0x2B = NRF_JAM_STOP       — Stop jammer
  *   0x2C = NRF_JAM_SET_MODE   — Change jammer mode
- *   0x2D = NRF_JAM_SET_CH     — Change jammer channel
+ *   0x2D = NRF_JAM_SET_CH     — Change jammer channel (live, for Single mode slider)
  *   0x2E = NRF_CLEAR_TARGETS  — Clear target list
  *   0x2F = NRF_STOP_ALL       — Stop all NRF tasks (cleanup on screen exit)
  *
  *   0x41 = NRF_SETTINGS       — Apply nRF24 radio settings (PA, data rate, channel, retransmit)
+ *   0x42 = NRF_JAM_SET_DWELL  — Change jammer dwell time live [dwellLo:1][dwellHi:1]
+ *   0x43 = NRF_JAM_MODE_CFG   — Get/Set per-mode config [mode:1][pa:1][dr:1][dwellLo:1][dwellHi:1][flood:1][bursts:1]
+ *   0x44 = NRF_JAM_MODE_INFO  — Get mode info (name, description, channels) [mode:1]
+ *   0x45 = NRF_JAM_RESET_CFG  — Reset all jam configs to optimal defaults
  */
 
 #ifndef NRF_COMMANDS_H
@@ -60,6 +64,10 @@ public:
         handler.registerCommand(0x2E, handleClearTargets);
         handler.registerCommand(0x2F, handleStopAll);
         handler.registerCommand(0x41, handleNrfSettings);
+        handler.registerCommand(0x42, handleJamSetDwell);
+        handler.registerCommand(0x43, handleJamModeConfig);
+        handler.registerCommand(0x44, handleJamModeInfo);
+        handler.registerCommand(0x45, handleJamResetConfig);
     }
 
 private:
@@ -415,6 +423,146 @@ private:
         ESP_LOGI("NRF", "Settings applied: PA=%d DR=%d CH=%d ART=%d",
                  paLevel, dataRate, channel, autoRetrans);
 
+        uint8_t resp[] = { MSG_COMMAND_SUCCESS };
+        ClientsManager::getInstance().notifyAllBinary(
+            NotificationType::NrfEvent, resp, sizeof(resp));
+        return true;
+    }
+
+    // ── 0x42: Change jammer dwell time live ─────────────────────
+    // Payload: [dwellLo:1][dwellHi:1]
+    static bool handleJamSetDwell(const uint8_t* data, size_t len) {
+        if (len < 2) {
+            uint8_t resp[] = { MSG_COMMAND_ERROR, 2 };
+            ClientsManager::getInstance().notifyAllBinary(
+                NotificationType::NrfEvent, resp, sizeof(resp));
+            return false;
+        }
+
+        uint16_t dwellMs = data[0] | (data[1] << 8);
+        NrfJammer::setDwellTime(dwellMs);
+
+        uint8_t resp[] = { MSG_COMMAND_SUCCESS };
+        ClientsManager::getInstance().notifyAllBinary(
+            NotificationType::NrfEvent, resp, sizeof(resp));
+        return true;
+    }
+
+    // ── 0x43: Get/Set per-mode jammer config ────────────────────
+    // GET (1 byte):  [mode:1]
+    //   Response: [MODE_CONFIG][mode][pa][dr][dwellLo][dwellHi][flood][bursts]
+    // SET (7 bytes): [mode:1][pa:1][dr:1][dwellLo:1][dwellHi:1][flood:1][bursts:1]
+    //   Response: [SUCCESS] or [ERROR]
+    static bool handleJamModeConfig(const uint8_t* data, size_t len) {
+        if (len < 1) {
+            uint8_t resp[] = { MSG_COMMAND_ERROR, 2 };
+            ClientsManager::getInstance().notifyAllBinary(
+                NotificationType::NrfEvent, resp, sizeof(resp));
+            return false;
+        }
+
+        uint8_t mode = data[0];
+        if (mode >= NRF_JAM_MODE_COUNT) {
+            uint8_t resp[] = { MSG_COMMAND_ERROR, 3 };  // Invalid mode
+            ClientsManager::getInstance().notifyAllBinary(
+                NotificationType::NrfEvent, resp, sizeof(resp));
+            return false;
+        }
+
+        if (len == 1) {
+            // GET: Return current config for this mode
+            const NrfJamModeConfig& cfg = NrfJammer::getModeConfig((NrfJamMode)mode);
+            uint8_t resp[8] = {
+                MSG_NRF_JAM_MODE_CONFIG,
+                mode,
+                cfg.paLevel,
+                cfg.dataRate,
+                (uint8_t)(cfg.dwellTimeMs & 0xFF),
+                (uint8_t)((cfg.dwellTimeMs >> 8) & 0xFF),
+                cfg.useFlooding,
+                cfg.floodBursts
+            };
+            ClientsManager::getInstance().notifyAllBinary(
+                NotificationType::NrfEvent, resp, sizeof(resp));
+            return true;
+        }
+
+        if (len >= 7) {
+            // SET: Update config for this mode
+            NrfJamModeConfig cfg;
+            cfg.paLevel     = data[1];
+            cfg.dataRate    = data[2];
+            cfg.dwellTimeMs = data[3] | (data[4] << 8);
+            cfg.useFlooding = data[5];
+            cfg.floodBursts = data[6];
+
+            bool ok = NrfJammer::setModeConfig((NrfJamMode)mode, cfg, true);
+
+            uint8_t resp[] = { ok ? MSG_COMMAND_SUCCESS : MSG_COMMAND_ERROR, 0 };
+            ClientsManager::getInstance().notifyAllBinary(
+                NotificationType::NrfEvent, resp, sizeof(resp));
+            return ok;
+        }
+
+        uint8_t resp[] = { MSG_COMMAND_ERROR, 2 };  // Bad payload length
+        ClientsManager::getInstance().notifyAllBinary(
+            NotificationType::NrfEvent, resp, sizeof(resp));
+        return false;
+    }
+
+    // ── 0x44: Get mode info (name, description, channels) ───────
+    // Payload: [mode:1]
+    // Response: [MODE_INFO][mode][freqStartHi][freqStartLo][freqEndHi][freqEndLo]
+    //           [channelCount:1][nameLen:1][name...][descLen:1][desc...]
+    static bool handleJamModeInfo(const uint8_t* data, size_t len) {
+        if (len < 1) {
+            uint8_t resp[] = { MSG_COMMAND_ERROR, 2 };
+            ClientsManager::getInstance().notifyAllBinary(
+                NotificationType::NrfEvent, resp, sizeof(resp));
+            return false;
+        }
+
+        uint8_t mode = data[0];
+        if (mode >= NRF_JAM_MODE_COUNT) {
+            uint8_t resp[] = { MSG_COMMAND_ERROR, 3 };
+            ClientsManager::getInstance().notifyAllBinary(
+                NotificationType::NrfEvent, resp, sizeof(resp));
+            return false;
+        }
+
+        const NrfJamModeInfo& info = NrfJammer::getModeInfo((NrfJamMode)mode);
+        uint8_t nameLen = strlen(info.name);
+        uint8_t descLen = strlen(info.description);
+
+        // Cap description to fit in BLE MTU (~180 bytes usable)
+        if (descLen > 160) descLen = 160;
+
+        // Build response: [type][mode][freqStartHi][freqStartLo][freqEndHi][freqEndLo]
+        //                 [channelCount][nameLen][name...][descLen][desc...]
+        size_t respLen = 8 + nameLen + 1 + descLen;
+        uint8_t* resp = new uint8_t[respLen];
+
+        resp[0] = MSG_NRF_JAM_MODE_INFO;
+        resp[1] = mode;
+        resp[2] = (uint8_t)((info.freqStartMHz >> 8) & 0xFF);
+        resp[3] = (uint8_t)(info.freqStartMHz & 0xFF);
+        resp[4] = (uint8_t)((info.freqEndMHz >> 8) & 0xFF);
+        resp[5] = (uint8_t)(info.freqEndMHz & 0xFF);
+        resp[6] = (uint8_t)(info.channelCount > 255 ? 255 : info.channelCount);
+        resp[7] = nameLen;
+        memcpy(resp + 8, info.name, nameLen);
+        resp[8 + nameLen] = descLen;
+        memcpy(resp + 9 + nameLen, info.description, descLen);
+
+        ClientsManager::getInstance().notifyAllBinary(
+            NotificationType::NrfEvent, resp, respLen);
+        delete[] resp;
+        return true;
+    }
+
+    // ── 0x45: Reset all jam configs to optimal defaults ─────────
+    static bool handleJamResetConfig(const uint8_t* data, size_t len) {
+        NrfJammer::resetToDefaults();
         uint8_t resp[] = { MSG_COMMAND_SUCCESS };
         ClientsManager::getInstance().notifyAllBinary(
             NotificationType::NrfEvent, resp, sizeof(resp));

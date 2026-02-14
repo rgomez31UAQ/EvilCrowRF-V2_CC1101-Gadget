@@ -150,10 +150,10 @@ void NrfModule::releaseSpi() {
     digitalWrite(NRF_CSN, HIGH);
 
     // End our SPI bus usage so CC1101 can re-initialize cleanly.
-    // NOTE: Do NOT call endTransaction() here — individual register
-    // read/write operations already manage their own transactions.
-    // Calling endTransaction() without a matching beginTransaction()
-    // corrupts the SPI driver state and breaks subsequent CC1101 use.
+    // Without end(), subsequent begin() calls inside acquireSpi() become
+    // no-ops (ESP32 Arduino SPI checks _spi handle), which means the bus
+    // pins are never reconfigured after CC1101 use — causing silent
+    // communication failures on the next NRF acquire cycle.
     hspi_->end();
 
     SemaphoreHandle_t mutex = ModuleCc1101::getSpiSemaphore();
@@ -385,7 +385,9 @@ bool NrfModule::transmit(const uint8_t* buf, uint8_t len) {
 void NrfModule::writeFast(const void* buf, uint8_t len) {
     if (len > 32) len = 32;
 
-    // Write TX payload
+    // Write TX payload directly — no FIFO/status checks here.
+    // The jammer task manages flushTx() + status clear before each
+    // burst cycle, so adding extra SPI reads here just wastes airtime.
     beginTransaction();
     spiTransfer(NRF_CMD_W_TX_PAYLOAD);
     const uint8_t* p = static_cast<const uint8_t*>(buf);
@@ -398,6 +400,17 @@ void NrfModule::writeFast(const void* buf, uint8_t len) {
     ceHigh();
     delayMicroseconds(15);
     ceLow();
+}
+
+void NrfModule::writePayload(const void* buf, uint8_t len) {
+    if (len > 32) len = 32;
+    beginTransaction();
+    spiTransfer(NRF_CMD_W_TX_PAYLOAD);
+    const uint8_t* p = static_cast<const uint8_t*>(buf);
+    for (uint8_t i = 0; i < len; i++) {
+        spiTransfer(p[i]);
+    }
+    endTransaction();
 }
 
 void NrfModule::setPayloadSize(uint8_t size) {

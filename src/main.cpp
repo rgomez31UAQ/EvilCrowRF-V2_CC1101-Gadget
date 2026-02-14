@@ -327,6 +327,10 @@ void taskProcessor(void* pvParameters)
                     status.module1Mode = static_cast<uint8_t>(CC1101Worker::getState(1));
                     status.numRegisters = numRegs; // 0x00 to 0x2E (46 registers)
                     status.freeHeap = ESP.getFreeHeap();
+                    status.cpuTempDeciC = static_cast<int16_t>(temperatureRead() * 10.0f)
+                        + ConfigManager::settings.cpuTempOffsetDeciC;
+                    status.core0Mhz = static_cast<uint16_t>(ESP.getCpuFreqMHz());
+                    status.core1Mhz = static_cast<uint16_t>(ESP.getCpuFreqMHz());
                     
                     // Read all CC1101 registers for both modules
                     moduleCC1101State[0].readAllConfigRegisters(status.module0Registers, numRegs);
@@ -691,6 +695,7 @@ void setup()
     // Initialize nRF24L01 module (optional hardware)
 #if NRF_MODULE_ENABLED
     ESP_LOGI(TAG, "Initializing nRF24L01 module...");
+    NrfJammer::loadConfigs();  // Load per-mode jam settings from flash
     if (NrfModule::init()) {
         MouseJack::init();
         ESP_LOGI(TAG, "nRF24L01 + MouseJack initialized");

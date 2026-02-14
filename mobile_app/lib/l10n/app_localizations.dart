@@ -3026,6 +3026,18 @@ abstract class AppLocalizations {
   /// **'Debug Controls'**
   String get debugControls;
 
+  /// No description provided for @cpuTempOffset.
+  ///
+  /// In en, this message translates to:
+  /// **'CPU Temp Offset'**
+  String get cpuTempOffset;
+
+  /// No description provided for @cpuTempOffsetDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Adds an offset to the ESP32 internal temperature sensor (stored on device).'**
+  String get cpuTempOffsetDesc;
+
   /// No description provided for @clearCachedDevice.
   ///
   /// In en, this message translates to:
