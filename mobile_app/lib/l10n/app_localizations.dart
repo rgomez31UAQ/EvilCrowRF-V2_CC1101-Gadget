@@ -362,6 +362,12 @@ abstract class AppLocalizations {
   /// **'Unknown Device'**
   String get unknownDevice;
 
+  /// No description provided for @noSupportedDevicesShowAll.
+  ///
+  /// In en, this message translates to:
+  /// **'No supported devices found. Select your device manually:'**
+  String get noSupportedDevicesShowAll;
+
   /// No description provided for @notConnectedToDevice.
   ///
   /// In en, this message translates to:
@@ -2653,6 +2659,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'RF Settings'**
   String get rfSettings;
+
+  /// No description provided for @rfSettingsSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Bruteforce, Radio & Scanner settings'**
+  String get rfSettingsSubtitle;
 
   /// No description provided for @syncedWithDevice.
   ///

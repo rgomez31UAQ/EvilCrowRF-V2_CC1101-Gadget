@@ -104,7 +104,10 @@ class BleProvider extends ChangeNotifier {
   int currentPathType = 5; // 0=/DATA/RECORDS, 1=/DATA/SIGNALS, 2=/DATA/PRESETS, 3=/DATA/TEMP, 4=INTERNAL (LittleFS), 5=SD Root
   bool isLoadingFiles = false;
   double fileListProgress = 0.0; // Progress for file list loading (0.0 to 1.0)
-  
+  bool isFormattingSD = false;   // True while SD format command is in progress
+  bool sdFormatSuccess = false;  // Result of last SD format
+  String sdFormatProgress = '';  // Progress message during SD format (e.g. "Deleting: /somefile")
+
   // Scanner state
   List<DetectedSignal> detectedSignals = [];
   Map<String, double> frequencySpectrum = {};
@@ -694,6 +697,7 @@ class BleProvider extends ChangeNotifier {
     _resetConnectionState();
     _log('info', 'Disconnected from device');
     isLoadingFiles = false;
+    isFormattingSD = false;
     
     // Clear cache on disconnect
     _fileCache.clear();
@@ -1199,38 +1203,29 @@ class BleProvider extends ChangeNotifier {
   // Methods for working with files
   
   /// Reads file content from ESP
-  Future<String> readFileContent(String filePath, {String? basePath}) async {
+  Future<String> readFileContent(String filePath, {int? pathType}) async {
     if (!isConnected) {
       throw Exception('Device not connected');
     }
     
-    // Determine pathType based on basePath
-    int pathType = 0;  // Default to /DATA/RECORDS
-    String relativePath = filePath;
+    // Use provided pathType or default to RECORDS (0)
+    int effectivePathType = pathType ?? 0;
     
-    if (basePath == '/DATA/SIGNALS') {
-      pathType = 1;
-    } else if (basePath == '/DATA/PRESETS') {
-      pathType = 2;
-    } else if (basePath == '/DATA/TEMP') {
-      pathType = 3;
-    } else if (basePath == '/SDROOT') {
-      pathType = 5;
-    } else if (basePath == '/') {
-      pathType = 4; // LittleFS internal storage
+    // For pathType 0-3 (RECORDS, SIGNALS, PRESETS, TEMP), extract relative path
+    // because firmware adds /DATA/XXXX/ prefix automatically.
+    // For pathType 4-5 (LittleFS root, SD root), keep full absolute path.
+    String pathToUse = filePath;
+    if (effectivePathType >= 0 && effectivePathType < 4 && filePath.startsWith('/DATA/')) {
+      // Extract relative path from /DATA/RECORDS/... or /DATA/SIGNALS/...
+      final parts = filePath.split('/');
+      if (parts.length > 3) {
+        pathToUse = parts.sublist(3).join('/');
+      } else {
+        pathToUse = parts.last;
+      }
     }
     
-    // Remove /DATA/ prefix if present (shouldn't be, but handle it)
-    if (relativePath.startsWith('/DATA/')) {
-      relativePath = relativePath.substring(6); // Remove '/DATA/'
-    }
-    
-    // Remove leading slash if present
-    if (relativePath.startsWith('/')) {
-      relativePath = relativePath.substring(1);
-    }
-    
-    _log('INFO', 'Reading file content: $relativePath (pathType: $pathType, basePath: $basePath)');
+    _log('INFO', 'Reading file content: $pathToUse (pathType: $effectivePathType)');
     
     // Set loading flag
     isLoadingFileContent = true;
@@ -1243,9 +1238,9 @@ class BleProvider extends ChangeNotifier {
     final completer = Completer<String>();
     _pendingFileReadCompleter = completer;
     
-    // Use binary command with path type - pass full relative path including subdirectory
-    final command = FirmwareBinaryProtocol.createLoadFileDataCommand(relativePath, pathType: pathType);
-    _log('INFO', 'Sending binary command for file: $relativePath (pathType: $pathType, command length: ${command.length})');
+    // Use binary command with path type
+    final command = FirmwareBinaryProtocol.createLoadFileDataCommand(pathToUse, pathType: effectivePathType);
+    _log('INFO', 'Sending binary command for file: $pathToUse (pathType: $effectivePathType, command length: ${command.length})');
     
     // Send binary file read command
     await sendBinaryCommand(command);
@@ -1287,10 +1282,8 @@ class BleProvider extends ChangeNotifier {
     _log('INFO', 'Downloading file: $filePath');
     
     // Using readFileContent, which already uses binary protocol
-    // Determine pathType based on current path
     try {
-      final basePath = _getBasePathForPathType(currentPathType);
-      final content = await readFileContent(filePath, basePath: basePath);
+      final content = await readFileContent(filePath, pathType: currentPathType);
       
       // Call progress callback if available
       onProgress?.call(1.0);
@@ -2545,6 +2538,26 @@ class BleProvider extends ChangeNotifier {
           _handleFileUploadResponse(responseData);
         }
         
+        // Handle format-sd response
+        if (responseData.containsKey('action') && responseData['action'] == 'format-sd') {
+          print('Format SD response received: $responseData');
+          
+          // Check if this is a progress update (errorCode 0xFF) or final result
+          if (responseData['isProgress'] == true) {
+            // Progress update — update message but keep formatting state
+            sdFormatProgress = responseData['progressMessage']?.toString() ?? '';
+            _log('info', 'SD format progress: $sdFormatProgress');
+            notifyListeners();
+          } else {
+            // Final result
+            isFormattingSD = false;
+            sdFormatProgress = '';
+            sdFormatSuccess = responseData['success'] == true;
+            _log('info', 'SD format ${sdFormatSuccess ? 'succeeded' : 'failed'}');
+            notifyListeners();
+          }
+        }
+
         // Handle copy response
         if (responseData.containsKey('action') && responseData['action'] == 'copy') {
           print('Copy response received: $responseData');
@@ -2998,10 +3011,11 @@ class BleProvider extends ChangeNotifier {
       // Use provided pathType or current
       int effectivePathType = pathType ?? currentPathType;
       
-      // Use the filePath as-is (it should be a relative path like "folder/file.sub" or just "file.sub")
-      // Only extract filename if it's an absolute path starting with /DATA/
+      // For pathType 0-3 (RECORDS, SIGNALS, PRESETS, TEMP), extract relative path
+      // because firmware adds /DATA/XXXX/ prefix automatically.
+      // For pathType 4-5 (LittleFS root, SD root), keep full absolute path.
       String pathToUse = filePath;
-      if (filePath.startsWith('/DATA/')) {
+      if (effectivePathType >= 0 && effectivePathType < 4 && filePath.startsWith('/DATA/')) {
         // Extract relative path from /DATA/RECORDS/... or /DATA/SIGNALS/...
         final parts = filePath.split('/');
         if (parts.length > 3) {
@@ -3233,6 +3247,25 @@ class BleProvider extends ChangeNotifier {
     }
   }
 
+  /// Format SD card: recursively delete all contents and re-create defaults.
+  Future<bool> formatSDCard() async {
+    if (!isConnected || txCharacteristic == null) return false;
+    try {
+      final cmd = FirmwareBinaryProtocol.createFormatSDCommand();
+      isFormattingSD = true;
+      sdFormatSuccess = false;
+      notifyListeners();
+      await sendBinaryCommand(cmd);
+      _log('warning', 'Format SD command sent');
+      return true;
+    } catch (e) {
+      isFormattingSD = false;
+      notifyListeners();
+      _log('error', 'Failed to send format SD: $e');
+      return false;
+    }
+  }
+
   /// Start a bruter attack with the given menu choice (1-33)
   Future<void> sendBruterCommand(int menuChoice) async {
     if (!isConnected || txCharacteristic == null) {
@@ -3252,6 +3285,35 @@ class BleProvider extends ChangeNotifier {
 
     _isBruterRunning = true;
     _bruterActiveProtocol = menuChoice;
+    notifyListeners();
+  }
+
+  /// Start a custom De Bruijn attack with per-protocol timing and frequency.
+  /// Uses firmware sub-command 0xFD to pass exact Te, ratio, bits, and
+  /// frequency instead of relying on hardcoded De Bruijn menus.
+  Future<void> sendCustomDeBruijnCommand({
+    required int bits,
+    required int te,
+    required int ratio,
+    required double frequencyMhz,
+  }) async {
+    if (!isConnected || txCharacteristic == null) {
+      _log('error', 'Cannot start custom De Bruijn: not connected');
+      throw Exception('Not connected');
+    }
+
+    _log('command', 'Starting custom De Bruijn: bits=$bits te=$te ratio=$ratio freq=$frequencyMhz');
+
+    final command = FirmwareBinaryProtocol.createCustomDeBruijnCommand(
+      bits: bits,
+      te: te,
+      ratio: ratio,
+      frequencyMhz: frequencyMhz,
+    );
+    await sendBinaryCommand(command);
+
+    _isBruterRunning = true;
+    _bruterActiveProtocol = 0xFD;
     notifyListeners();
   }
 

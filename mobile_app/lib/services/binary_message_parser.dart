@@ -430,16 +430,21 @@ class BinaryFileActionResult {
       case 5: return 'move';
       case 6: return 'tree';
       case 7: return 'load';
+      case 8: return 'format-sd';
       default: return 'unknown';
     }
   }
 
   Map<String, dynamic> toJson() {
+    // errorCode 0xFF with success=true means "in progress" (format SD step)
+    bool isProgress = (success && errorCode == 0xFF);
     return {
       'action': getActionString(),
       'success': success,
       'path': path,
       'error': success ? null : _getErrorMessage(errorCode),
+      'isProgress': isProgress,
+      'progressMessage': isProgress ? path : null,
     };
   }
 

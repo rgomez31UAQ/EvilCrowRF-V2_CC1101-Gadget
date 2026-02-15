@@ -34,6 +34,7 @@ public:
         handler.registerCommand(0x0F, handleMoveFile);
         handler.registerCommand(0x10, handleSaveToSignalsWithName);
         handler.registerCommand(0x14, handleGetDirectoryTree); // Changed from 0x12 to avoid conflict with startJam
+        handler.registerCommand(0x18, handleFormatSDCard);
     }
     
 private:
@@ -747,6 +748,60 @@ public:
         return true;
     }
     
+    /**
+     * @brief Recursively remove a directory and all its contents.
+     *
+     * Walks the directory tree depth-first: deletes every file, recurses
+     * into sub-directories, then removes the now-empty directory itself.
+     *
+     * @param fs   Filesystem reference (SD or LittleFS).
+     * @param path Absolute path of the directory to remove.
+     * @return true if the directory and all children were deleted.
+     */
+    static bool removeDirectoryRecursive(fs::FS& fs, const char* path) {
+        File dir = fs.open(path);
+        if (!dir || !dir.isDirectory()) {
+            dir.close();
+            return false;
+        }
+
+        bool allOk = true;
+        File child = dir.openNextFile();
+        while (child) {
+            // Copy path before close — child.path() is an internal pointer
+            // that becomes invalid after child.close().
+            char childPathBuf[256];
+            strncpy(childPathBuf, child.path(), sizeof(childPathBuf) - 1);
+            childPathBuf[sizeof(childPathBuf) - 1] = '\0';
+            bool isDir = child.isDirectory();
+            child.close();
+
+            if (isDir) {
+                if (!removeDirectoryRecursive(fs, childPathBuf)) {
+                    ESP_LOGE("FileCmd", "Failed to remove dir: %s", childPathBuf);
+                    allOk = false;
+                    // Continue deleting other entries instead of aborting
+                }
+            } else {
+                if (!fs.remove(childPathBuf)) {
+                    ESP_LOGE("FileCmd", "Failed to remove file: %s", childPathBuf);
+                    allOk = false;
+                }
+            }
+            // Yield to prevent watchdog timeout on deep/large trees
+            vTaskDelay(1);
+            child = dir.openNextFile();
+        }
+        dir.close();
+
+        // Directory should now be empty — remove it
+        if (!fs.rmdir(path)) {
+            ESP_LOGE("FileCmd", "Failed to rmdir: %s", path);
+            return false;
+        }
+        return allOk;
+    }
+
     static bool handleRemoveFile(const uint8_t* data, size_t len) {
         if (len < 2) {
             sendBinaryFileActionResult(1, false, 1); // 1=delete, error 1=insufficient data
@@ -778,13 +833,118 @@ public:
         
         bool ok = false;
         if (isDirectory) {
-            ok = fs.rmdir(pathBuffer.c_str());
+            ok = removeDirectoryRecursive(fs, pathBuffer.c_str());
         } else {
             ok = fs.remove(pathBuffer.c_str());
         }
         
         sendBinaryFileActionResult(1, ok, ok ? 0 : 4, pathBuffer.c_str()); // error 4=delete failed
         return ok;
+    }
+
+    /**
+     * @brief Format SD card: recursively delete all contents and re-create
+     *        the default directory structure.
+     *        Sends progressive feedback (errorCode 0xFF = in-progress step).
+     *
+     * Payload: [0x46][0x53] ('FS') as confirmation guard — prevents
+     * accidental invocation.
+     */
+    static bool handleFormatSDCard(const uint8_t* data, size_t len) {
+        // Require 2-byte confirmation payload 'FS' (Format SD)
+        if (len < 2 || data[0] != 0x46 || data[1] != 0x53) {
+            ESP_LOGW("FileCmd", "Format SD rejected: missing confirmation 'FS'");
+            sendBinaryFileActionResult(8, false, 1); // actionType 8 = format
+            return false;
+        }
+
+        ESP_LOGW("FileCmd", "FORMAT SD CARD — deleting all contents");
+
+        // Phase 1: notify app that format has started
+        sendBinaryFileActionResult(8, true, 0xFF, "Starting format...");
+        vTaskDelay(pdMS_TO_TICKS(50)); // Let BLE send the notification
+
+        // Phase 2: recursively delete every entry in SD root
+        File root = SD.open("/");
+        if (!root || !root.isDirectory()) {
+            ESP_LOGE("FileCmd", "Cannot open SD root");
+            sendBinaryFileActionResult(8, false, 2);
+            return false;
+        }
+
+        bool allOk = true;
+        int deletedCount = 0;
+        File child = root.openNextFile();
+        while (child) {
+            // Copy path to local buffer before close — child.path()
+            // returns an internal pointer invalidated by close().
+            char childPathBuf[256];
+            strncpy(childPathBuf, child.path(), sizeof(childPathBuf) - 1);
+            childPathBuf[sizeof(childPathBuf) - 1] = '\0';
+            bool isDir = child.isDirectory();
+            child.close();
+
+            // Send progress notification for each item being deleted
+            char progressMsg[280];
+            snprintf(progressMsg, sizeof(progressMsg), "Deleting: %s", childPathBuf);
+            sendBinaryFileActionResult(8, true, 0xFF, progressMsg);
+            vTaskDelay(pdMS_TO_TICKS(20)); // Let BLE send + prevent WDT
+
+            if (isDir) {
+                if (!removeDirectoryRecursive(SD, childPathBuf)) {
+                    ESP_LOGE("FileCmd", "Failed to remove dir: %s", childPathBuf);
+                    allOk = false;
+                }
+            } else {
+                if (!SD.remove(childPathBuf)) {
+                    ESP_LOGE("FileCmd", "Failed to remove file: %s", childPathBuf);
+                    allOk = false;
+                }
+            }
+            deletedCount++;
+            // Yield to prevent watchdog timeout during format
+            vTaskDelay(1);
+            child = root.openNextFile();
+        }
+        root.close();
+
+        ESP_LOGI("FileCmd", "Deleted %d items from SD root", deletedCount);
+
+        // Phase 3: re-create default directory structure with progress and verification
+        static const char* defaultDirs[] = {
+            "/DATA",
+            "/DATA/RECORDS",
+            "/DATA/SIGNALS",
+            "/DATA/PRESETS",
+            "/DATA/TEMP"
+        };
+        bool creationSuccess = true;
+        for (int i = 0; i < 5; i++) {
+            char progressMsg[280];
+            snprintf(progressMsg, sizeof(progressMsg), "Creating: %s", defaultDirs[i]);
+            sendBinaryFileActionResult(8, true, 0xFF, progressMsg);
+            vTaskDelay(pdMS_TO_TICKS(20));
+            
+            // Create directory and verify
+            if (!SD.mkdir(defaultDirs[i])) {
+                // mkdir returns false if directory already exists or creation failed
+                // Check if it exists to distinguish between these cases
+                if (!SD.exists(defaultDirs[i])) {
+                    ESP_LOGE("FileCmd", "Failed to create directory: %s", defaultDirs[i]);
+                    creationSuccess = false;
+                    allOk = false;
+                } else {
+                    ESP_LOGI("FileCmd", "Directory already exists: %s", defaultDirs[i]);
+                }
+            } else {
+                ESP_LOGI("FileCmd", "Created directory: %s", defaultDirs[i]);
+            }
+        }
+
+        ESP_LOGI("FileCmd", "SD card format %s", allOk ? "complete" : "completed with errors");
+        // Send final result (errorCode 0 = done successfully, 4 = done with errors)
+        sendBinaryFileActionResult(8, allOk, allOk ? 0 : 4);
+        return allOk;
     }
     
     static bool handleRenameFile(const uint8_t* data, size_t len) {

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -27,6 +28,15 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   /// True after we sync HW button config from device once.
   bool _hwConfigSynced = false;
+
+  /// Debounce timer for nRF slider auto-send.
+  Timer? _nrfDebounceTimer;
+
+  @override
+  void dispose() {
+    _nrfDebounceTimer?.cancel();
+    super.dispose();
+  }
 
   /// Navigates to DebugScreen on single tap.
   void _onDebugTap(BuildContext context) {
@@ -615,11 +625,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           subtitle: Text(
-            bleProvider.settingsSynced ? AppLocalizations.of(context)!.syncedWithDevice : AppLocalizations.of(context)!.localOnly,
-            style: TextStyle(
-              color: bleProvider.settingsSynced
-                  ? AppColors.success
-                  : AppColors.secondaryText,
+            AppLocalizations.of(context)!.rfSettingsSubtitle,
+            style: const TextStyle(
+              color: AppColors.secondaryText,
               fontSize: 12,
             ),
           ),
@@ -1027,73 +1035,79 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _buildScannerSettings(BuildContext context, BleProvider bleProvider) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+    return Consumer<SettingsProvider>(
+      builder: (context, settingsProvider, child) {
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Icon(Icons.signal_cellular_alt,
-                  size: 18, color: AppColors.secondaryText),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      AppLocalizations.of(context)!.rssiThreshold(bleProvider.scannerRssi),
-                      style: const TextStyle(
-                        color: AppColors.primaryText,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500,
-                      ),
+              // ── RSSI threshold ──
+              Row(
+                children: [
+                  const Icon(Icons.signal_cellular_alt,
+                      size: 18, color: AppColors.secondaryText),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          AppLocalizations.of(context)!.rssiThreshold(bleProvider.scannerRssi),
+                          style: const TextStyle(
+                            color: AppColors.primaryText,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        Text(
+                          AppLocalizations.of(context)!.minSignalStrengthDesc,
+                          style: const TextStyle(
+                              color: AppColors.secondaryText, fontSize: 11),
+                        ),
+                      ],
                     ),
-                    Text(
-                      AppLocalizations.of(context)!.minSignalStrengthDesc,
-                      style: const TextStyle(
-                          color: AppColors.secondaryText, fontSize: 11),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
+              Slider(
+                value: bleProvider.scannerRssi.toDouble(),
+                min: -120,
+                max: -20,
+                divisions: 100,
+                label: '${bleProvider.scannerRssi} dBm',
+                activeColor: AppColors.searching,
+                onChanged: (value) {
+                  bleProvider.sendSettingsToDevice(scannerRssi: value.round());
+                },
+              ),
+              Wrap(
+                spacing: 8,
+                children: [-90, -80, -70, -60, -50].map((rssi) {
+                  final isSelected = bleProvider.scannerRssi == rssi;
+                  return ChoiceChip(
+                    label: Text('$rssi'),
+                    selected: isSelected,
+                    onSelected: (_) {
+                      bleProvider.sendSettingsToDevice(scannerRssi: rssi);
+                    },
+                    selectedColor:
+                        AppColors.searching.withValues(alpha: 0.2),
+                    labelStyle: TextStyle(
+                      color: isSelected
+                          ? AppColors.searching
+                          : AppColors.secondaryText,
+                      fontSize: 11,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                  );
+                }).toList(),
+              ),
+
             ],
           ),
-          Slider(
-            value: bleProvider.scannerRssi.toDouble(),
-            min: -120,
-            max: -20,
-            divisions: 100,
-            label: '${bleProvider.scannerRssi} dBm',
-            activeColor: AppColors.searching,
-            onChanged: (value) {
-              bleProvider.sendSettingsToDevice(scannerRssi: value.round());
-            },
-          ),
-          Wrap(
-            spacing: 8,
-            children: [-90, -80, -70, -60, -50].map((rssi) {
-              final isSelected = bleProvider.scannerRssi == rssi;
-              return ChoiceChip(
-                label: Text('$rssi'),
-                selected: isSelected,
-                onSelected: (_) {
-                  bleProvider.sendSettingsToDevice(scannerRssi: rssi);
-                },
-                selectedColor:
-                    AppColors.searching.withValues(alpha: 0.2),
-                labelStyle: TextStyle(
-                  color: isSelected
-                      ? AppColors.searching
-                      : AppColors.secondaryText,
-                  fontSize: 11,
-                ),
-                visualDensity: VisualDensity.compact,
-              );
-            }).toList(),
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -1178,7 +1192,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           return ChoiceChip(
                             label: Text(_nrfPaLabel(lvl)),
                             selected: isSelected,
-                            onSelected: (_) => settingsProvider.setNrfPaLevel(lvl),
+                            onSelected: (_) {
+                              settingsProvider.setNrfPaLevel(lvl);
+                              _sendNrfSettings(context, bleProvider, settingsProvider);
+                            },
                             selectedColor: const Color(0xFF00BCD4).withValues(alpha: 0.2),
                             labelStyle: TextStyle(
                               color: isSelected ? const Color(0xFF00BCD4) : AppColors.secondaryText,
@@ -1220,7 +1237,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           return ChoiceChip(
                             label: Text(_nrfDataRateLabel(dr)),
                             selected: isSelected,
-                            onSelected: (_) => settingsProvider.setNrfDataRate(dr),
+                            onSelected: (_) {
+                              settingsProvider.setNrfDataRate(dr);
+                              _sendNrfSettings(context, bleProvider, settingsProvider);
+                            },
                             selectedColor: const Color(0xFF00BCD4).withValues(alpha: 0.2),
                             labelStyle: TextStyle(
                               color: isSelected ? const Color(0xFF00BCD4) : AppColors.secondaryText,
@@ -1271,6 +1291,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         activeColor: const Color(0xFF00BCD4),
                         onChanged: (value) {
                           settingsProvider.setNrfChannel(value.round());
+                          _debouncedSendNrfSettings(context, bleProvider, settingsProvider);
                         },
                       ),
 
@@ -1313,38 +1334,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         activeColor: const Color(0xFF00BCD4),
                         onChanged: (value) {
                           settingsProvider.setNrfAutoRetransmit(value.round());
+                          _debouncedSendNrfSettings(context, bleProvider, settingsProvider);
                         },
                       ),
-
-                      const SizedBox(height: 12),
-
-                      // Send to device button
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          onPressed: bleProvider.isConnected
-                              ? () => _sendNrfSettings(context, bleProvider, settingsProvider)
-                              : null,
-                          icon: const Icon(Icons.send),
-                          label: Text(AppLocalizations.of(context)!.sendToDevice),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF00BCD4),
-                            foregroundColor: AppColors.primaryBackground,
-                            disabledBackgroundColor:
-                                const Color(0xFF00BCD4).withValues(alpha: 0.3),
-                            disabledForegroundColor: AppColors.disabledText,
-                          ),
-                        ),
-                      ),
-                      if (!bleProvider.isConnected)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 4),
-                          child: Text(
-                            AppLocalizations.of(context)!.connectToDeviceToApply,
-                            style: const TextStyle(
-                                color: AppColors.secondaryText, fontSize: 11),
-                          ),
-                        ),
                     ],
                   ),
                 );
@@ -1375,8 +1367,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  /// Debounced auto-send for nRF slider changes (500ms).
+  void _debouncedSendNrfSettings(BuildContext context, BleProvider bleProvider,
+      SettingsProvider settingsProvider) {
+    _nrfDebounceTimer?.cancel();
+    _nrfDebounceTimer = Timer(const Duration(milliseconds: 500), () {
+      _sendNrfSettings(context, bleProvider, settingsProvider);
+    });
+  }
+
   void _sendNrfSettings(BuildContext context, BleProvider bleProvider,
       SettingsProvider settingsProvider) async {
+    if (!bleProvider.isConnected) return;
     try {
       // Send NRF settings as a settings sync command
       // Using MSG_SETTINGS_UPDATE (0xC1) with extended NRF payload
@@ -1862,6 +1864,59 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                   const SizedBox(height: 24),
 
+                  // ── Format SD Card ──
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppColors.warning.withValues(alpha: 0.06),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppColors.warning.withValues(alpha: 0.3)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Row(
+                          children: [
+                            Icon(Icons.sd_card_alert, size: 18, color: AppColors.warning),
+                            SizedBox(width: 8),
+                            Text(
+                              'Format SD Card',
+                              style: TextStyle(
+                                color: AppColors.warning,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Delete all files and folders from the SD card and re-create the default directory structure. This cannot be undone.',
+                          style: TextStyle(color: AppColors.secondaryText, fontSize: 12),
+                        ),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            onPressed: bleProvider.isConnected
+                                ? () => _showFormatSDDialog(context, bleProvider)
+                                : null,
+                            icon: const Icon(Icons.sd_card),
+                            label: const Text('Format SD Card'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.warning,
+                              foregroundColor: Colors.white,
+                              disabledBackgroundColor: AppColors.warning.withValues(alpha: 0.3),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 24),
+
                   // ── Factory Reset ──
                   Container(
                     width: double.infinity,
@@ -2049,6 +2104,158 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  /// Show Format SD Card confirmation dialog, then a non-dismissible
+  /// progress dialog that auto-closes when the firmware sends the result.
+  void _showFormatSDDialog(BuildContext context, BleProvider bleProvider) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.secondaryBackground,
+        title: const Row(
+          children: [
+            Icon(Icons.sd_card_alert, color: AppColors.warning, size: 24),
+            SizedBox(width: 10),
+            Text('Format SD Card', style: TextStyle(color: AppColors.warning)),
+          ],
+        ),
+        content: const Text(
+          'Are you sure you want to delete ALL files from the SD card?\n\n'
+          'This will:\n'
+          '  - Delete all recordings, signals, and presets\n'
+          '  - Delete all uploaded .sub files\n'
+          '  - Re-create the default directory structure\n\n'
+          'This action cannot be undone.',
+          style: TextStyle(color: AppColors.primaryText, fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('No', style: TextStyle(color: AppColors.secondaryText, fontSize: 16)),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.of(ctx).pop();
+              final sent = await bleProvider.formatSDCard();
+              if (!context.mounted) return;
+              if (!sent) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Failed to send format SD command.'),
+                    backgroundColor: AppColors.error,
+                  ),
+                );
+                return;
+              }
+              // Show non-dismissible progress dialog; auto-closes on result
+              _showSDFormatProgressDialog(context);
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.warning,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Yes, Format', style: TextStyle(fontSize: 16)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Non-dismissible progress dialog that listens to BleProvider.isFormattingSD
+  /// and closes automatically when the firmware result arrives.
+  void _showSDFormatProgressDialog(BuildContext context) {
+    bool closed = false;
+    bool hasReceivedResponse = false;
+    
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => PopScope(
+        canPop: false,
+        child: Consumer<BleProvider>(
+          builder: (context, ble, _) {
+            // Mark that we've started receiving progress updates
+            if (ble.isFormattingSD && ble.sdFormatProgress.isNotEmpty) {
+              hasReceivedResponse = true;
+            }
+            
+            // Only close if we've received at least one progress update and formatting is done
+            // This prevents premature closure if firmware responds instantly with error
+            if (!ble.isFormattingSD && !closed && hasReceivedResponse) {
+              closed = true;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (ctx.mounted) Navigator.of(ctx).pop();
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(ble.sdFormatSuccess
+                          ? 'SD card formatted successfully.'
+                          : 'SD card format failed.'),
+                      backgroundColor: ble.sdFormatSuccess
+                          ? AppColors.success
+                          : AppColors.error,
+                      duration: const Duration(seconds: 3),
+                    ),
+                  );
+                }
+              });
+            }
+            
+            // Show warning if formatting takes too long without progress
+            if (ble.isFormattingSD && !hasReceivedResponse) {
+              // Start a timeout to close dialog if no response after 10 seconds
+              Future.delayed(const Duration(seconds: 10), () {
+                if (ctx.mounted && !closed && !hasReceivedResponse) {
+                  closed = true;
+                  Navigator.of(ctx).pop();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Format timeout: No response from device.'),
+                      backgroundColor: AppColors.error,
+                      duration: Duration(seconds: 4),
+                    ),
+                  );
+                }
+              });
+            }
+            
+            return AlertDialog(
+              backgroundColor: AppColors.secondaryBackground,
+              title: const Row(
+                children: [
+                  Icon(Icons.sd_card, color: AppColors.warning, size: 24),
+                  SizedBox(width: 10),
+                  Text('Formatting...', style: TextStyle(color: AppColors.warning)),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 16),
+                  Text(
+                    ble.sdFormatProgress.isNotEmpty
+                        ? ble.sdFormatProgress
+                        : 'Formatting SD card, please wait.',
+                    style: const TextStyle(color: AppColors.primaryText),
+                    textAlign: TextAlign.center,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Do not disconnect the device.',
+                    style: TextStyle(color: AppColors.secondaryText, fontSize: 12),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
   /// Build HW Buttons configuration section.
   Widget _buildHwButtonsSection(BuildContext context, BleProvider bleProvider) {
     return Card(
@@ -2124,9 +2331,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         action: settingsProvider.button1Action,
                         color: AppColors.primaryAccent,
                         replayPath: settingsProvider.button1ReplayPath,
-                        onPickReplayFile: () => _pickReplaySubFile(context, settingsProvider, 1),
+                        onPickReplayFile: () async {
+                          await _pickReplaySubFile(context, settingsProvider, 1);
+                          _sendButtonConfig(context, bleProvider, settingsProvider);
+                        },
                         onChanged: (action) {
                           settingsProvider.setButton1Action(action);
+                          _sendButtonConfig(context, bleProvider, settingsProvider);
                         },
                       ),
 
@@ -2138,42 +2349,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         action: settingsProvider.button2Action,
                         color: AppColors.warning,
                         replayPath: settingsProvider.button2ReplayPath,
-                        onPickReplayFile: () => _pickReplaySubFile(context, settingsProvider, 2),
+                        onPickReplayFile: () async {
+                          await _pickReplaySubFile(context, settingsProvider, 2);
+                          _sendButtonConfig(context, bleProvider, settingsProvider);
+                        },
                         onChanged: (action) {
                           settingsProvider.setButton2Action(action);
+                          _sendButtonConfig(context, bleProvider, settingsProvider);
                         },
                       ),
-
-                      const SizedBox(height: 16),
-
-                      // Send to device button
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          onPressed: bleProvider.isConnected
-                              ? () => _sendButtonConfig(
-                                  context, bleProvider, settingsProvider)
-                              : null,
-                          icon: const Icon(Icons.send),
-                          label: Text(AppLocalizations.of(context)!.sendToDevice),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: AppColors.info,
-                            foregroundColor: AppColors.primaryBackground,
-                            disabledBackgroundColor:
-                                AppColors.info.withValues(alpha: 0.3),
-                            disabledForegroundColor: AppColors.disabledText,
-                          ),
-                        ),
-                      ),
-                      if (!bleProvider.isConnected)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 4),
-                          child: Text(
-                            AppLocalizations.of(context)!.connectToDeviceToApply,
-                            style: const TextStyle(
-                                color: AppColors.secondaryText, fontSize: 11),
-                          ),
-                        ),
                     ],
                   ),
                 );
@@ -2261,7 +2445,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: Text(
                   replayPath == null || replayPath.isEmpty
                       ? 'No .sub file selected'
-                      : replayPath,
+                      : replayPath.split('/').last,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(color: AppColors.secondaryText, fontSize: 11),
@@ -3150,34 +3334,126 @@ class _SubGhzCloneDialogState extends State<_SubGhzCloneDialog> {
   bool _hasError = false;
   String _errorMessage = '';
 
+  // Pause / Resume state
+  bool _isPaused = false;
+  bool _pauseRequested = false;
+  bool _checkingResume = true;
+  bool _hasResumableSession = false;
+  Set<String> _completedPaths = {};
+
   @override
   void initState() {
     super.initState();
-    _startCloning();
+    _checkForResumableSession();
   }
 
-  Future<void> _startCloning() async {
+  /// On open, check if a previous session can be resumed.
+  Future<void> _checkForResumableSession() async {
+    final hasResume = await FlipperSubDbService.hasResumableSession();
+    if (!mounted) return;
+    if (hasResume) {
+      final completed = await FlipperSubDbService.loadCompletedFiles();
+      setState(() {
+        _checkingResume = false;
+        _hasResumableSession = true;
+        _completedPaths = completed;
+        _statusText =
+            'Previous session found (${completed.length} files already uploaded). Resume or start fresh?';
+      });
+    } else {
+      setState(() {
+        _checkingResume = false;
+        _hasResumableSession = false;
+      });
+      _startCloning(resume: false);
+    }
+  }
+
+  /// Pause the current upload. Finishes the file in progress, then stops.
+  void _pauseCloning() {
+    setState(() {
+      _pauseRequested = true;
+      _statusText = 'Pausing after current file...';
+    });
+  }
+
+  /// Resume a paused or previously-saved session.
+  void _resumeCloning() {
+    setState(() {
+      _isPaused = false;
+      _pauseRequested = false;
+      _hasResumableSession = false;
+    });
+    _startCloning(resume: true);
+  }
+
+  Future<void> _startCloning({required bool resume}) async {
     // Keep screen awake during the entire cloning process
     WakelockPlus.enable();
     try {
-      // Phase 1 & 2: Download and extract
-      setState(() {
-        _phase = 'download';
-        _statusText = 'Downloading SubGHz database from GitHub...';
-        _progress = 0.0;
-      });
+      List<SubFileEntry> subFiles;
 
-      final subFiles = await FlipperSubDbService.downloadAndExtract(
-        onProgress: (phase, detail, fraction) {
-          if (mounted) {
-            setState(() {
-              _phase = phase;
-              _statusText = detail;
-              _progress = fraction;
-            });
-          }
-        },
-      );
+      if (resume) {
+        // ── Resume path: re-extract from cached ZIP ──
+        setState(() {
+          _phase = 'extract';
+          _statusText = 'Loading cached database...';
+          _progress = 0.0;
+        });
+
+        final cachedZip = await FlipperSubDbService.loadCachedZip();
+        if (cachedZip == null) {
+          setState(() {
+            _isDone = true;
+            _hasError = true;
+            _errorMessage = 'Cached ZIP not found. Please start a fresh clone.';
+          });
+          WakelockPlus.disable();
+          return;
+        }
+
+        // Load previously completed files
+        _completedPaths = await FlipperSubDbService.loadCompletedFiles();
+
+        subFiles = FlipperSubDbService.extractFromBytes(
+          cachedZip,
+          onProgress: (phase, detail, fraction) {
+            if (mounted) {
+              setState(() {
+                _phase = phase;
+                _statusText = detail;
+                _progress = fraction;
+              });
+            }
+          },
+        );
+      } else {
+        // ── Fresh start: download and extract ──
+        _completedPaths = {};
+        await FlipperSubDbService.clearCache();
+
+        setState(() {
+          _phase = 'download';
+          _statusText = 'Downloading SubGHz database from GitHub...';
+          _progress = 0.0;
+        });
+
+        subFiles = await FlipperSubDbService.downloadAndExtract(
+          onProgress: (phase, detail, fraction) {
+            if (mounted) {
+              setState(() {
+                _phase = phase;
+                _statusText = detail;
+                _progress = fraction;
+              });
+            }
+          },
+          onZipDownloaded: (zipBytes) async {
+            // Cache the raw ZIP for potential resume
+            await FlipperSubDbService.cacheZipBytes(zipBytes);
+          },
+        );
+      }
 
       if (subFiles.isEmpty) {
         setState(() {
@@ -3185,16 +3461,18 @@ class _SubGhzCloneDialogState extends State<_SubGhzCloneDialog> {
           _hasError = true;
           _errorMessage = 'No .sub files found in the repository';
         });
+        WakelockPlus.disable();
         return;
       }
 
       _totalFiles = subFiles.length;
+      _uploadedFiles = _completedPaths.length;
 
       // Phase 3: Create base directory on SDCard
       setState(() {
         _phase = 'upload';
         _statusText = 'Creating "SUB Files" folder on SDCard...';
-        _progress = 0.0;
+        _progress = _completedPaths.length / _totalFiles;
       });
 
       await widget.bleProvider.createDirectory(
@@ -3208,7 +3486,8 @@ class _SubGhzCloneDialogState extends State<_SubGhzCloneDialog> {
         if (parts.length > 1) {
           // Build cumulative subdir paths
           for (int i = 1; i < parts.length; i++) {
-            final subdir = '${FlipperSubDbService.sdTargetFolder}/${parts.sublist(0, i).join('/')}';
+            final subdir =
+                '${FlipperSubDbService.sdTargetFolder}/${parts.sublist(0, i).join('/')}';
             subdirs.add(subdir);
           }
         }
@@ -3217,6 +3496,7 @@ class _SubGhzCloneDialogState extends State<_SubGhzCloneDialog> {
       // Create subdirectories (sorted so parents come first)
       final sortedDirs = subdirs.toList()..sort();
       for (final dir in sortedDirs) {
+        if (_pauseRequested) break;
         setState(() {
           _statusText = 'Creating folder: $dir';
         });
@@ -3230,15 +3510,36 @@ class _SubGhzCloneDialogState extends State<_SubGhzCloneDialog> {
 
       // Phase 4: Upload files one at a time
       for (int i = 0; i < subFiles.length; i++) {
+        // ── Check for pause after each file ──
+        if (_pauseRequested) {
+          await FlipperSubDbService.saveProgress(_completedPaths);
+          if (mounted) {
+            setState(() {
+              _isPaused = true;
+              _pauseRequested = false;
+              _statusText =
+                  'Paused – $_uploadedFiles / $_totalFiles files uploaded. You can close and resume later.';
+            });
+          }
+          WakelockPlus.disable();
+          return;
+        }
+
         final file = subFiles[i];
+
+        // Skip already-uploaded files (from a previous session)
+        if (_completedPaths.contains(file.relativePath)) {
+          continue;
+        }
+
         final targetPath =
             '${FlipperSubDbService.sdTargetFolder}/${file.relativePath}';
 
         if (mounted) {
           setState(() {
-            _uploadedFiles = i;
-            _statusText = 'Uploading (${i + 1}/$_totalFiles): ${file.relativePath}';
-            _progress = i / _totalFiles;
+            _statusText =
+                'Uploading (${_uploadedFiles + 1}/$_totalFiles): ${file.relativePath}';
+            _progress = _uploadedFiles / _totalFiles;
           });
         }
 
@@ -3248,6 +3549,14 @@ class _SubGhzCloneDialogState extends State<_SubGhzCloneDialog> {
             targetPath,
             pathType: 5,
           );
+          _completedPaths.add(file.relativePath);
+          _uploadedFiles = _completedPaths.length;
+
+          // Persist progress every 10 files for safety
+          if (_uploadedFiles % 10 == 0) {
+            await FlipperSubDbService.saveProgress(_completedPaths);
+          }
+
           // Pace uploads to avoid BLE congestion
           await Future.delayed(const Duration(milliseconds: 150));
         } catch (e) {
@@ -3256,6 +3565,9 @@ class _SubGhzCloneDialogState extends State<_SubGhzCloneDialog> {
           print('Failed to upload ${file.relativePath}: $e');
         }
       }
+
+      // All files processed – clean up cache
+      await FlipperSubDbService.clearCache();
 
       if (mounted) {
         setState(() {
@@ -3270,6 +3582,10 @@ class _SubGhzCloneDialogState extends State<_SubGhzCloneDialog> {
       // Release wakelock after successful completion
       WakelockPlus.disable();
     } catch (e) {
+      // On error, save progress so user can resume later
+      if (_completedPaths.isNotEmpty) {
+        await FlipperSubDbService.saveProgress(_completedPaths);
+      }
       // Release wakelock on error
       WakelockPlus.disable();
       if (mounted) {
@@ -3285,23 +3601,87 @@ class _SubGhzCloneDialogState extends State<_SubGhzCloneDialog> {
 
   @override
   Widget build(BuildContext context) {
+    // While checking for resumable session, show a spinner
+    if (_checkingResume) {
+      return AlertDialog(
+        title: Row(
+          children: [
+            const SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(width: 8),
+            const Text('Clone SubGHz DB', style: TextStyle(fontSize: 16)),
+          ],
+        ),
+        content: const Text('Checking for previous session...'),
+      );
+    }
+
+    // If a resumable session was found, show Resume / Start Fresh options
+    if (_hasResumableSession && !_isPaused && _phase == 'init') {
+      return AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.replay, color: Colors.orange),
+            const SizedBox(width: 8),
+            const Expanded(
+              child: Text('Resume Clone?', style: TextStyle(fontSize: 16)),
+            ),
+          ],
+        ),
+        content: Text(
+          '${_completedPaths.length} files were uploaded in a previous session.\n'
+          'Resume where you left off, or start fresh?',
+          style: TextStyle(color: AppColors.primaryText, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          OutlinedButton(
+            onPressed: () {
+              setState(() {
+                _hasResumableSession = false;
+                _completedPaths = {};
+              });
+              _startCloning(resume: false);
+            },
+            child: const Text('Start Fresh'),
+          ),
+          ElevatedButton(
+            onPressed: _resumeCloning,
+            child: const Text('Resume'),
+          ),
+        ],
+      );
+    }
+
     return AlertDialog(
       title: Row(
         children: [
           Icon(
             _isDone
                 ? (_hasError ? Icons.error_outline : Icons.check_circle)
-                : Icons.cloud_download,
+                : _isPaused
+                    ? Icons.pause_circle
+                    : Icons.cloud_download,
             color: _isDone
                 ? (_hasError ? AppColors.error : AppColors.success)
-                : Colors.orange,
+                : _isPaused
+                    ? Colors.orange
+                    : Colors.orange,
           ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
               _isDone
                   ? (_hasError ? 'Clone Failed' : 'Clone Complete')
-                  : 'Cloning SubGHz Database',
+                  : _isPaused
+                      ? 'Clone Paused'
+                      : 'Cloning SubGHz Database',
               style: const TextStyle(fontSize: 16),
             ),
           ),
@@ -3312,7 +3692,7 @@ class _SubGhzCloneDialogState extends State<_SubGhzCloneDialog> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // Phase indicator
-          if (!_isDone) ...[
+          if (!_isDone && !_isPaused) ...[
             Row(
               children: [
                 SizedBox(
@@ -3364,7 +3744,9 @@ class _SubGhzCloneDialogState extends State<_SubGhzCloneDialog> {
                     ? AppColors.error
                     : _isDone
                         ? AppColors.success
-                        : Colors.orange,
+                        : _isPaused
+                            ? Colors.orange.shade300
+                            : Colors.orange,
               ),
               minHeight: 8,
             ),
@@ -3372,7 +3754,7 @@ class _SubGhzCloneDialogState extends State<_SubGhzCloneDialog> {
           const SizedBox(height: 8),
 
           // File counter (during upload phase)
-          if (_phase == 'upload' || _isDone)
+          if (_phase == 'upload' || _isDone || _isPaused)
             Text(
               '$_uploadedFiles / $_totalFiles files'
               '${_failedFiles > 0 ? ' ($_failedFiles failed)' : ''}',
@@ -3402,10 +3784,41 @@ class _SubGhzCloneDialogState extends State<_SubGhzCloneDialog> {
         ],
       ),
       actions: [
-        if (_isDone)
-          ElevatedButton(
+        // Close button when done, paused, or errored
+        if (_isDone || _isPaused)
+          TextButton(
             onPressed: () => Navigator.of(context).pop(),
-            child: Text('Close'),
+            child: const Text('Close'),
+          ),
+
+        // Resume button when paused
+        if (_isPaused)
+          ElevatedButton.icon(
+            onPressed: _resumeCloning,
+            icon: const Icon(Icons.play_arrow, size: 18),
+            label: const Text('Resume'),
+          ),
+
+        // Pause button during upload (only while actively uploading)
+        if (!_isDone && !_isPaused && _phase == 'upload' && !_pauseRequested)
+          ElevatedButton.icon(
+            onPressed: _pauseCloning,
+            icon: const Icon(Icons.pause, size: 18),
+            label: const Text('Pause'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.orange,
+            ),
+          ),
+
+        // Show "Pausing..." indicator when pause is requested
+        if (_pauseRequested && !_isPaused)
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 8),
+            child: SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
           ),
       ],
     );

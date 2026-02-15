@@ -168,6 +168,10 @@ class AppLocalizationsRu extends AppLocalizations {
   String get unknownDevice => 'Неизвестное устройство';
 
   @override
+  String get noSupportedDevicesShowAll =>
+      'Устройства не распознаны. Выберите вручную:';
+
+  @override
   String get notConnectedToDevice => 'Не подключено к устройству';
 
   @override
@@ -1498,6 +1502,9 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get rfSettings => 'Настройки RF';
+
+  @override
+  String get rfSettingsSubtitle => 'Брутфорс, радио и сканер';
 
   @override
   String get syncedWithDevice => 'Синхронизировано с устройством';

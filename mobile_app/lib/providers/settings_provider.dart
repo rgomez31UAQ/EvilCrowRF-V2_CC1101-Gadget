@@ -54,7 +54,6 @@ class SettingsProvider with ChangeNotifier {
   int _nrfDataRate = 0;      // 0=1MBPS, 1=2MBPS, 2=250KBPS
   int _nrfChannel = 76;      // Default channel (0-125)
   int _nrfAutoRetransmit = 5; // Retransmit count (0-15)
-
   bool get debugMode => _debugMode;
   int get bruterDelayMs => _bruterDelayMs;
   int get bruterModule => _bruterModule;
