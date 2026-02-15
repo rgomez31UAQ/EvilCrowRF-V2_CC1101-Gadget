@@ -106,6 +106,7 @@ class BleProvider extends ChangeNotifier {
   double fileListProgress = 0.0; // Progress for file list loading (0.0 to 1.0)
   bool isFormattingSD = false;   // True while SD format command is in progress
   bool sdFormatSuccess = false;  // Result of last SD format
+  String sdFormatProgress = '';  // Progress message during SD format (e.g. "Deleting: /somefile")
 
   // Scanner state
   List<DetectedSignal> detectedSignals = [];
@@ -2551,10 +2552,21 @@ class BleProvider extends ChangeNotifier {
         // Handle format-sd response
         if (responseData.containsKey('action') && responseData['action'] == 'format-sd') {
           print('Format SD response received: $responseData');
-          isFormattingSD = false;
-          sdFormatSuccess = responseData['success'] == true;
-          _log('info', 'SD format ${sdFormatSuccess ? 'succeeded' : 'failed'}');
-          notifyListeners();
+          
+          // Check if this is a progress update (errorCode 0xFF) or final result
+          if (responseData['isProgress'] == true) {
+            // Progress update — update message but keep formatting state
+            sdFormatProgress = responseData['progressMessage']?.toString() ?? '';
+            _log('info', 'SD format progress: $sdFormatProgress');
+            notifyListeners();
+          } else {
+            // Final result
+            isFormattingSD = false;
+            sdFormatProgress = '';
+            sdFormatSuccess = responseData['success'] == true;
+            _log('info', 'SD format ${sdFormatSuccess ? 'succeeded' : 'failed'}');
+            notifyListeners();
+          }
         }
 
         // Handle copy response

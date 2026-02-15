@@ -845,6 +845,7 @@ public:
     /**
      * @brief Format SD card: recursively delete all contents and re-create
      *        the default directory structure.
+     *        Sends progressive feedback (errorCode 0xFF = in-progress step).
      *
      * Payload: [0x46][0x53] ('FS') as confirmation guard — prevents
      * accidental invocation.
@@ -859,7 +860,11 @@ public:
 
         ESP_LOGW("FileCmd", "FORMAT SD CARD — deleting all contents");
 
-        // Recursively delete every entry in SD root
+        // Phase 1: notify app that format has started
+        sendBinaryFileActionResult(8, true, 0xFF, "Starting format...");
+        vTaskDelay(pdMS_TO_TICKS(50)); // Let BLE send the notification
+
+        // Phase 2: recursively delete every entry in SD root
         File root = SD.open("/");
         if (!root || !root.isDirectory()) {
             ESP_LOGE("FileCmd", "Cannot open SD root");
@@ -868,6 +873,7 @@ public:
         }
 
         bool allOk = true;
+        int deletedCount = 0;
         File child = root.openNextFile();
         while (child) {
             // Copy path to local buffer before close — child.path()
@@ -877,6 +883,12 @@ public:
             childPathBuf[sizeof(childPathBuf) - 1] = '\0';
             bool isDir = child.isDirectory();
             child.close();
+
+            // Send progress notification for each item being deleted
+            char progressMsg[280];
+            snprintf(progressMsg, sizeof(progressMsg), "Deleting: %s", childPathBuf);
+            sendBinaryFileActionResult(8, true, 0xFF, progressMsg);
+            vTaskDelay(pdMS_TO_TICKS(20)); // Let BLE send + prevent WDT
 
             if (isDir) {
                 if (!removeDirectoryRecursive(SD, childPathBuf)) {
@@ -889,20 +901,34 @@ public:
                     allOk = false;
                 }
             }
+            deletedCount++;
             // Yield to prevent watchdog timeout during format
             vTaskDelay(1);
             child = root.openNextFile();
         }
         root.close();
 
-        // Re-create default directory structure
-        SD.mkdir("/DATA");
-        SD.mkdir("/DATA/RECORDS");
-        SD.mkdir("/DATA/SIGNALS");
-        SD.mkdir("/DATA/PRESETS");
-        SD.mkdir("/DATA/TEMP");
+        ESP_LOGI("FileCmd", "Deleted %d items from SD root", deletedCount);
+
+        // Phase 3: re-create default directory structure with progress
+        static const char* defaultDirs[] = {
+            "/DATA",
+            "/DATA/RECORDS",
+            "/DATA/SIGNALS",
+            "/DATA/PRESETS",
+            "/DATA/TEMP"
+        };
+        for (int i = 0; i < 5; i++) {
+            char progressMsg[280];
+            snprintf(progressMsg, sizeof(progressMsg), "Creating: %s", defaultDirs[i]);
+            sendBinaryFileActionResult(8, true, 0xFF, progressMsg);
+            vTaskDelay(pdMS_TO_TICKS(20));
+            SD.mkdir(defaultDirs[i]);
+            ESP_LOGI("FileCmd", "Created directory: %s", defaultDirs[i]);
+        }
 
         ESP_LOGI("FileCmd", "SD card format %s", allOk ? "complete" : "completed with errors");
+        // Send final result (errorCode 0 = done successfully, 4 = done with errors)
         sendBinaryFileActionResult(8, allOk, allOk ? 0 : 4);
         return allOk;
     }

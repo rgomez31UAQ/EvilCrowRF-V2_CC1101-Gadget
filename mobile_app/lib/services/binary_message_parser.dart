@@ -436,11 +436,15 @@ class BinaryFileActionResult {
   }
 
   Map<String, dynamic> toJson() {
+    // errorCode 0xFF with success=true means "in progress" (format SD step)
+    bool isProgress = (success && errorCode == 0xFF);
     return {
       'action': getActionString(),
       'success': success,
       'path': path,
       'error': success ? null : _getErrorMessage(errorCode),
+      'isProgress': isProgress,
+      'progressMessage': isProgress ? path : null,
     };
   }
 

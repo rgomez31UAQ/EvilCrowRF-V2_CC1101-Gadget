@@ -174,6 +174,7 @@ void cc1101WorkerSignalDetectedHandler(const CC1101DetectedSignal& signal)
 struct DeviceConfig
 {
     bool powerBlink;
+    bool sdCardMounted;  // True if SD card is available
 } deviceConfig;
 
 // REMOVED - old state machine task (all code deleted, now using CC1101Worker)
@@ -621,13 +622,31 @@ void setup()
 
     ESP_LOGD(TAG, "Starting setup...");
 
+    // --- SD Card initialization (non-blocking) ---
     sdspi.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_SS);
     if (!SD.begin(SD_SS, sdspi)) {
-        ESP_LOGE(TAG, "Card Mount Failed");
-        return;
-    }
+        ESP_LOGW(TAG, "SD card not mounted — running in LittleFS-only mode");
+        deviceConfig.sdCardMounted = false;
+        // Continue setup without SD — features requiring SD will be limited
+    } else {
+        deviceConfig.sdCardMounted = true;
+        ESP_LOGI(TAG, "SD card initialized.");
 
-    ESP_LOGD(TAG, "SD card initialized.");
+        // Ensure default directory structure exists on SD
+        static const char* defaultDirs[] = {
+            "/DATA",
+            "/DATA/RECORDS",
+            "/DATA/SIGNALS",
+            "/DATA/PRESETS",
+            "/DATA/TEMP"
+        };
+        for (int i = 0; i < 5; i++) {
+            if (!SD.exists(defaultDirs[i])) {
+                SD.mkdir(defaultDirs[i]);
+                ESP_LOGI(TAG, "Created missing directory: %s", defaultDirs[i]);
+            }
+        }
+    }
 
     ControllerAdapter::initializeQueue();
 

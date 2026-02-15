@@ -2198,18 +2198,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   Text('Formatting...', style: TextStyle(color: AppColors.warning)),
                 ],
               ),
-              content: const Column(
+              content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 16),
                   Text(
-                    'Formatting SD card, please wait.',
-                    style: TextStyle(color: AppColors.primaryText),
+                    ble.sdFormatProgress.isNotEmpty
+                        ? ble.sdFormatProgress
+                        : 'Formatting SD card, please wait.',
+                    style: const TextStyle(color: AppColors.primaryText),
                     textAlign: TextAlign.center,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                  SizedBox(height: 8),
-                  Text(
+                  const SizedBox(height: 8),
+                  const Text(
                     'Do not disconnect the device.',
                     style: TextStyle(color: AppColors.secondaryText, fontSize: 12),
                     textAlign: TextAlign.center,
