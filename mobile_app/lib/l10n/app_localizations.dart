@@ -362,6 +362,12 @@ abstract class AppLocalizations {
   /// **'Unknown Device'**
   String get unknownDevice;
 
+  /// No description provided for @noSupportedDevicesShowAll.
+  ///
+  /// In en, this message translates to:
+  /// **'No supported devices found. Select your device manually:'**
+  String get noSupportedDevicesShowAll;
+
   /// No description provided for @notConnectedToDevice.
   ///
   /// In en, this message translates to:

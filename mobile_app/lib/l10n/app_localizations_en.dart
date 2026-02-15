@@ -166,6 +166,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get unknownDevice => 'Unknown Device';
 
   @override
+  String get noSupportedDevicesShowAll =>
+      'No supported devices found. Select your device manually:';
+
+  @override
   String get notConnectedToDevice => 'Not connected to device';
 
   @override

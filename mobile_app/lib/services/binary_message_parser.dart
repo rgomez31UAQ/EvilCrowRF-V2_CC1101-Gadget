@@ -430,6 +430,7 @@ class BinaryFileActionResult {
       case 5: return 'move';
       case 6: return 'tree';
       case 7: return 'load';
+      case 8: return 'format-sd';
       default: return 'unknown';
     }
   }

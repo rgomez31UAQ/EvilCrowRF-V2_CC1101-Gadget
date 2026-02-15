@@ -8,7 +8,6 @@ import '../providers/notification_provider.dart';
 import '../providers/firmware_protocol.dart';
 import '../models/detected_signal.dart';
 import '../theme/app_colors.dart';
-
 class SignalScannerScreen extends StatefulWidget {
   const SignalScannerScreen({super.key});
 
@@ -19,8 +18,8 @@ class SignalScannerScreen extends StatefulWidget {
 class _SignalScannerScreenState extends State<SignalScannerScreen>
     with TickerProviderStateMixin {
 
-  // Scanning modes
-  bool _isListMode = true;
+  // View modes: 0 = Signal List, 1 = Spectrogram (default)
+  int _viewMode = 1;
   bool _isScanning = false;
   int _selectedModule = 0; // 0 or 1 (displayed as 1 or 2)
 
@@ -53,7 +52,7 @@ class _SignalScannerScreenState extends State<SignalScannerScreen>
       duration: const Duration(milliseconds: 800),
       vsync: this,
     )..addListener(() {
-        if (!_isListMode) setState(() {}); // Rebuild spectrogram on tick
+        if (_viewMode != 0) setState(() {}); // Rebuild spectrogram on tick
       });
   }
 
@@ -75,7 +74,7 @@ class _SignalScannerScreenState extends State<SignalScannerScreen>
     final bleProvider = Provider.of<BleProvider>(context, listen: false);
 
     setState(() => _isScanning = true);
-    if (!_isListMode) _spectrumAnimationController.repeat();
+    if (_viewMode != 0) _spectrumAnimationController.repeat();
 
     // Start decay timer for dynamic spectrogram
     _startDecayTimer();
@@ -261,7 +260,7 @@ class _SignalScannerScreenState extends State<SignalScannerScreen>
                     _buildControlPanel(),
                     _buildModeSwitch(),
                     Expanded(
-                      child: _isListMode
+                      child: _viewMode == 0
                           ? _buildListView(bleProvider)
                           : _buildSpectrumView(bleProvider),
                     ),
@@ -313,7 +312,7 @@ class _SignalScannerScreenState extends State<SignalScannerScreen>
           ),
           const SizedBox(height: 8),
           // RSSI threshold
-          if (_isListMode)
+          if (_viewMode == 0)
             Row(
               children: [
                 const Text('RSSI:', style: TextStyle(
@@ -374,29 +373,28 @@ class _SignalScannerScreenState extends State<SignalScannerScreen>
       ),
       child: Row(
         children: [
-          _modeSwitchTab(AppLocalizations.of(context)!.signalList, isSelected: _isListMode, onTap: () {
-            setState(() => _isListMode = true);
-          }),
-          _modeSwitchTab(AppLocalizations.of(context)!.spectrogramView, isSelected: !_isListMode, onTap: () {
-            setState(() => _isListMode = false);
-          }),
+          _modeSwitchTab(AppLocalizations.of(context)!.signalList,
+              isSelected: _viewMode == 0, onTap: () => _setViewMode(0)),
+          _modeSwitchTab(AppLocalizations.of(context)!.spectrogramView,
+              isSelected: _viewMode == 1, onTap: () => _setViewMode(1)),
         ],
       ),
     );
   }
 
+  void _setViewMode(int mode) {
+    setState(() => _viewMode = mode);
+    if (_viewMode != 0 && _isScanning) {
+      _spectrumAnimationController.repeat();
+    } else {
+      _spectrumAnimationController.stop();
+    }
+  }
+
   Widget _modeSwitchTab(String label, {required bool isSelected, required VoidCallback onTap}) {
     return Expanded(
       child: GestureDetector(
-        onTap: () {
-          onTap();
-          // Start/stop animation controller when switching to/from spectrogram
-          if (!_isListMode && _isScanning) {
-            _spectrumAnimationController.repeat();
-          } else {
-            _spectrumAnimationController.stop();
-          }
-        },
+        onTap: onTap,
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 10),
           decoration: BoxDecoration(
@@ -409,7 +407,7 @@ class _SignalScannerScreenState extends State<SignalScannerScreen>
             style: TextStyle(
               color: isSelected ? Colors.black : AppColors.secondaryText,
               fontWeight: FontWeight.bold,
-              fontSize: 13,
+              fontSize: 12,
             ),
           ),
         ),

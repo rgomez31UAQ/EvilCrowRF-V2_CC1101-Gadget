@@ -168,6 +168,10 @@ class AppLocalizationsRu extends AppLocalizations {
   String get unknownDevice => 'Неизвестное устройство';
 
   @override
+  String get noSupportedDevicesShowAll =>
+      'Устройства не распознаны. Выберите вручную:';
+
+  @override
   String get notConnectedToDevice => 'Не подключено к устройству';
 
   @override

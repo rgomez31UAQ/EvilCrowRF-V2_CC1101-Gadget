@@ -104,7 +104,9 @@ class BleProvider extends ChangeNotifier {
   int currentPathType = 5; // 0=/DATA/RECORDS, 1=/DATA/SIGNALS, 2=/DATA/PRESETS, 3=/DATA/TEMP, 4=INTERNAL (LittleFS), 5=SD Root
   bool isLoadingFiles = false;
   double fileListProgress = 0.0; // Progress for file list loading (0.0 to 1.0)
-  
+  bool isFormattingSD = false;   // True while SD format command is in progress
+  bool sdFormatSuccess = false;  // Result of last SD format
+
   // Scanner state
   List<DetectedSignal> detectedSignals = [];
   Map<String, double> frequencySpectrum = {};
@@ -694,6 +696,7 @@ class BleProvider extends ChangeNotifier {
     _resetConnectionState();
     _log('info', 'Disconnected from device');
     isLoadingFiles = false;
+    isFormattingSD = false;
     
     // Clear cache on disconnect
     _fileCache.clear();
@@ -2545,6 +2548,15 @@ class BleProvider extends ChangeNotifier {
           _handleFileUploadResponse(responseData);
         }
         
+        // Handle format-sd response
+        if (responseData.containsKey('action') && responseData['action'] == 'format-sd') {
+          print('Format SD response received: $responseData');
+          isFormattingSD = false;
+          sdFormatSuccess = responseData['success'] == true;
+          _log('info', 'SD format ${sdFormatSuccess ? 'succeeded' : 'failed'}');
+          notifyListeners();
+        }
+
         // Handle copy response
         if (responseData.containsKey('action') && responseData['action'] == 'copy') {
           print('Copy response received: $responseData');
@@ -3238,10 +3250,15 @@ class BleProvider extends ChangeNotifier {
     if (!isConnected || txCharacteristic == null) return false;
     try {
       final cmd = FirmwareBinaryProtocol.createFormatSDCommand();
+      isFormattingSD = true;
+      sdFormatSuccess = false;
+      notifyListeners();
       await sendBinaryCommand(cmd);
       _log('warning', 'Format SD command sent');
       return true;
     } catch (e) {
+      isFormattingSD = false;
+      notifyListeners();
       _log('error', 'Failed to send format SD: $e');
       return false;
     }

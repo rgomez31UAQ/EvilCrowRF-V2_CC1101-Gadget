@@ -105,6 +105,7 @@
     }
   },
   "unknownDevice": "Неизвестное устройство",
+  "noSupportedDevicesShowAll": "Устройства не распознаны. Выберите вручную:",
   
   "notConnectedToDevice": "Не подключено к устройству",
   "connectToDeviceToManageFiles": "Подключитесь к устройству для управления файлами",

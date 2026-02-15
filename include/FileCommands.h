@@ -765,30 +765,41 @@ public:
             return false;
         }
 
+        bool allOk = true;
         File child = dir.openNextFile();
         while (child) {
-            const char* childPath = child.path();
+            // Copy path before close — child.path() is an internal pointer
+            // that becomes invalid after child.close().
+            char childPathBuf[256];
+            strncpy(childPathBuf, child.path(), sizeof(childPathBuf) - 1);
+            childPathBuf[sizeof(childPathBuf) - 1] = '\0';
             bool isDir = child.isDirectory();
             child.close();
 
             if (isDir) {
-                if (!removeDirectoryRecursive(fs, childPath)) {
-                    dir.close();
-                    return false;
+                if (!removeDirectoryRecursive(fs, childPathBuf)) {
+                    ESP_LOGE("FileCmd", "Failed to remove dir: %s", childPathBuf);
+                    allOk = false;
+                    // Continue deleting other entries instead of aborting
                 }
             } else {
-                if (!fs.remove(childPath)) {
-                    ESP_LOGE("FileCmd", "Failed to remove file: %s", childPath);
-                    dir.close();
-                    return false;
+                if (!fs.remove(childPathBuf)) {
+                    ESP_LOGE("FileCmd", "Failed to remove file: %s", childPathBuf);
+                    allOk = false;
                 }
             }
+            // Yield to prevent watchdog timeout on deep/large trees
+            vTaskDelay(1);
             child = dir.openNextFile();
         }
         dir.close();
 
         // Directory should now be empty — remove it
-        return fs.rmdir(path);
+        if (!fs.rmdir(path)) {
+            ESP_LOGE("FileCmd", "Failed to rmdir: %s", path);
+            return false;
+        }
+        return allOk;
     }
 
     static bool handleRemoveFile(const uint8_t* data, size_t len) {
@@ -859,21 +870,27 @@ public:
         bool allOk = true;
         File child = root.openNextFile();
         while (child) {
-            const char* childPath = child.path();
+            // Copy path to local buffer before close — child.path()
+            // returns an internal pointer invalidated by close().
+            char childPathBuf[256];
+            strncpy(childPathBuf, child.path(), sizeof(childPathBuf) - 1);
+            childPathBuf[sizeof(childPathBuf) - 1] = '\0';
             bool isDir = child.isDirectory();
             child.close();
 
             if (isDir) {
-                if (!removeDirectoryRecursive(SD, childPath)) {
-                    ESP_LOGE("FileCmd", "Failed to remove dir: %s", childPath);
+                if (!removeDirectoryRecursive(SD, childPathBuf)) {
+                    ESP_LOGE("FileCmd", "Failed to remove dir: %s", childPathBuf);
                     allOk = false;
                 }
             } else {
-                if (!SD.remove(childPath)) {
-                    ESP_LOGE("FileCmd", "Failed to remove file: %s", childPath);
+                if (!SD.remove(childPathBuf)) {
+                    ESP_LOGE("FileCmd", "Failed to remove file: %s", childPathBuf);
                     allOk = false;
                 }
             }
+            // Yield to prevent watchdog timeout during format
+            vTaskDelay(1);
             child = root.openNextFile();
         }
         root.close();

@@ -169,18 +169,26 @@ class QuickConnectWidget extends StatelessWidget {
     } else {
       // No saved devices - show scan button or scan results
       List<dynamic> supportedDevices = bleProvider.supportedScanResults;
-      if (supportedDevices.isNotEmpty) {
-        // Show found supported devices
+
+      // Fallback: if no supported devices found but scan returned results,
+      // show ALL nearby BLE devices so user can manually select (e.g. renamed device)
+      final bool isFallback = supportedDevices.isEmpty && bleProvider.scanResults.isNotEmpty;
+      final List<dynamic> devicesToShow = isFallback ? bleProvider.scanResults : supportedDevices;
+
+      if (devicesToShow.isNotEmpty) {
+        // Show found devices
         return Column(
           children: [
             Text(
-              AppLocalizations.of(context)!.foundSupportedDevicesCount(supportedDevices.length),
+              isFallback
+                  ? AppLocalizations.of(context)!.noSupportedDevicesShowAll
+                  : AppLocalizations.of(context)!.foundSupportedDevicesCount(devicesToShow.length),
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: AppColors.secondaryText,
+                color: isFallback ? AppColors.warning : AppColors.secondaryText,
               ),
             ),
             const SizedBox(height: 8),
-            ...supportedDevices.map((result) => Container(
+            ...devicesToShow.map((result) => Container(
               width: double.infinity,
               margin: const EdgeInsets.only(bottom: 8),
               padding: const EdgeInsets.all(12),
@@ -190,8 +198,8 @@ class QuickConnectWidget extends StatelessWidget {
               ),
               child: Row(
                 children: [
-                  const Icon(
-                    Icons.bluetooth,
+                  Icon(
+                    isFallback ? Icons.bluetooth_searching : Icons.bluetooth,
                     color: AppColors.info,
                     size: 20,
                   ),

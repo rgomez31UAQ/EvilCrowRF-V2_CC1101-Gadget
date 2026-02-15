@@ -118,6 +118,7 @@
     }
   },
   "unknownDevice": "Unknown Device",
+  "noSupportedDevicesShowAll": "No supported devices found. Select your device manually:",
   
   "notConnectedToDevice": "Not connected to device",
   "connectToDeviceToManageFiles": "Connect to a device to manage files",
