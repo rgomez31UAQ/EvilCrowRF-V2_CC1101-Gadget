@@ -87,8 +87,8 @@ class UpdateService {
       String currentVersion) async {
     try {
       final releases = await _fetchReleases();
-      // Fetch structured changelog in parallel
-      final changelogData = await fetchChangelog();
+      // Fetch structured changelog from release assets
+      final changelogData = await fetchChangelog(releases);
 
       String? bestVersion;
       Map<String, dynamic>? bestRelease;
@@ -154,8 +154,8 @@ class UpdateService {
   static Future<AppUpdate?> checkAppUpdate(String currentVersion) async {
     try {
       final releases = await _fetchReleases();
-      // Fetch structured changelog in parallel
-      final changelogData = await fetchChangelog();
+      // Fetch structured changelog from release assets
+      final changelogData = await fetchChangelog(releases);
 
       String? bestVersion;
       Map<String, dynamic>? bestRelease;
@@ -291,8 +291,9 @@ class UpdateService {
       }
 
       final totalBytes = streamedResponse.contentLength ?? 0;
-      final tempDir = await getTemporaryDirectory();
-      final file = File('${tempDir.path}/EvilCrowRF_update.apk');
+      // Save APK to public Downloads directory (user-accessible)
+      final downloadsDir = await _getDownloadsDirectory();
+      final file = File('${downloadsDir.path}/EvilCrowRF_update.apk');
       final sink = file.openWrite();
       int received = 0;
 
@@ -315,25 +316,65 @@ class UpdateService {
 
   // ── Private helpers ──────────────────────────────────────────
 
-  /// URL to the structured changelog.json in the repository.
-  static const String _changelogUrl =
-      'https://raw.githubusercontent.com/$githubOwner/$githubRepo/main/releases/changelog.json';
+  /// Get the public Downloads directory on Android, or temp as fallback.
+  static Future<Directory> _getDownloadsDirectory() async {
+    if (Platform.isAndroid) {
+      final downloadsPath = '/storage/emulated/0/Download';
+      final dir = Directory(downloadsPath);
+      if (await dir.exists()) {
+        return dir;
+      }
+    }
+    // Fallback: temp directory
+    return await getTemporaryDirectory();
+  }
 
-  /// Fetch the structured changelog from changelog.json.
+  /// Fetch the structured changelog from changelog.json in release assets.
+  /// Searches through releases to find changelog.json as an asset.
   /// Returns a map with "firmware" and "app" lists parsed from the JSON.
   /// Returns null on failure (non-fatal — falls back to release body).
-  static Future<Map<String, dynamic>?> fetchChangelog() async {
+  static Future<Map<String, dynamic>?> fetchChangelog(List<dynamic> releases) async {
+    // Try to find changelog.json in release assets (newest first)
+    for (final release in releases) {
+      if (release['draft'] == true) continue;
+      final assets = release['assets'] as List? ?? [];
+      
+      // Look for changelog.json asset
+      for (final asset in assets) {
+        final name = asset['name'] as String? ?? '';
+        if (name.toLowerCase() == 'changelog.json') {
+          final downloadUrl = asset['browser_download_url'] as String?;
+          if (downloadUrl == null) continue;
+          
+          try {
+            final response = await http.get(
+              Uri.parse(downloadUrl),
+            ).timeout(_timeout);
+            if (response.statusCode == 200) {
+              return jsonDecode(response.body) as Map<String, dynamic>;
+            }
+          } catch (e) {
+            // Continue searching in other releases
+            continue;
+          }
+        }
+      }
+    }
+    
+    // Fallback: try legacy URL from main branch (for backward compatibility)
     try {
+      const legacyUrl = 'https://raw.githubusercontent.com/$githubOwner/$githubRepo/main/releases/changelog.json';
       final response = await http.get(
-        Uri.parse(_changelogUrl),
+        Uri.parse(legacyUrl),
       ).timeout(_timeout);
       if (response.statusCode == 200) {
         return jsonDecode(response.body) as Map<String, dynamic>;
       }
-      return null;
     } catch (_) {
-      return null;
+      // Ignore fallback errors
     }
+    
+    return null;
   }
 
   /// Extract structured changes list for a specific version from changelog.json.

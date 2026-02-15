@@ -82,36 +82,14 @@ class _FileViewerScreenState extends State<FileViewerScreen>
       
       // Log file path for debugging
       
-      // Determine basePath from pathType
-      String basePath;
-      switch (widget.pathType) {
-        case 1:
-          basePath = '/DATA/SIGNALS';
-          break;
-        case 2:
-          basePath = '/DATA/PRESETS';
-          break;
-        case 3:
-          basePath = '/DATA/TEMP';
-          break;
-        case 4:
-          basePath = '/';
-          break;
-        default:
-          basePath = '/DATA/RECORDS';
-      }
-      
-      // Use full path with directory (widget.filePath already contains the relative path)
-      // Remove leading slash if present to get relative path
+      // Use filePath as-is and let readFileContent handle path construction
+      // based on pathType (0-3=relative, 4-5=absolute)
       String filePath = widget.filePath;
-      if (filePath.startsWith('/')) {
-        filePath = filePath.substring(1);
-      }
       
       print('Loading file: path="$filePath", pathType=${widget.pathType}');
       
-      // Read file from ESP (isLoadingFileContent flag is set internally)
-      final content = await bleProvider.readFileContent(filePath, basePath: basePath);
+      // Read file from ESP (pathType determines how path is interpreted)
+      final content = await bleProvider.readFileContent(filePath, pathType: widget.pathType);
       
       if (mounted) {
         // Check if response is an error from ESP
@@ -276,18 +254,18 @@ class _FileViewerScreenState extends State<FileViewerScreen>
       }
     } catch (e) {
       print('_saveFileToDevice: Error during save: $e');
-      // On error save to Documents as fallback
+      // On error save to Downloads folder as fallback (user-accessible)
       try {
-        print('_saveFileToDevice: Trying fallback to Documents directory');
-        final directory = await getApplicationDocumentsDirectory();
+        print('_saveFileToDevice: Trying fallback to Downloads directory');
+        final downloadsDir = await _getDownloadsDirectory();
         final fileName = widget.fileItem.name;
-        final file = File('${directory.path}/$fileName');
+        final file = File('${downloadsDir.path}/$fileName');
         await file.writeAsString(content);
         
         // Verify file was actually saved
         if (await file.exists()) {
           final fileSize = await file.length();
-          print('_saveFileToDevice: File saved to Documents, size: $fileSize bytes');
+          print('_saveFileToDevice: File saved to Downloads, size: $fileSize bytes');
           
           if (mounted) {
             final notificationProvider = Provider.of<NotificationProvider>(context, listen: false);
@@ -307,6 +285,23 @@ class _FileViewerScreenState extends State<FileViewerScreen>
         }
       }
     }
+  }
+
+  /// Get the public Downloads directory on Android, or Documents as fallback.
+  Future<Directory> _getDownloadsDirectory() async {
+    if (Platform.isAndroid) {
+      // On Android, use the public Downloads directory
+      final downloadsPath = '/storage/emulated/0/Download';
+      final dir = Directory(downloadsPath);
+      if (await dir.exists()) {
+        return dir;
+      }
+    }
+    // Fallback: try path_provider's downloads directory
+    final dir = await getDownloadsDirectory();
+    if (dir != null) return dir;
+    // Ultimate fallback: app Documents directory
+    return await getApplicationDocumentsDirectory();
   }
 
   String _getFileExtension() {

@@ -73,15 +73,42 @@ void bruter_handleCommand(const String& command) {
     }
 }
 
+void BruterModule::updatePinsForModule() {
+    if (selectedModule == MODULE_1) {
+        RF_CS   = CC1101_SS0;
+        RF_GDO0 = MOD0_GDO0;
+        RF_TX   = MOD0_GDO0;
+    } else {
+        RF_CS   = CC1101_SS1;
+        RF_GDO0 = MOD1_GDO0;
+        RF_TX   = MOD1_GDO0;
+    }
+}
+
+void BruterModule::setModule(uint8_t mod) {
+    if (mod > MODULE_2) mod = MODULE_2;
+    selectedModule = mod;
+    updatePinsForModule();
+    ESP_LOGI("Bruter", "Module set to %d (CS=%d, TX=%d)", selectedModule, RF_CS, RF_TX);
+}
+
 bool BruterModule::setupCC1101() {
     // Acquire shared SPI semaphore — the bruter shares the HSPI bus
     // and the global currentModule variable with CC1101Worker.
     SemaphoreHandle_t spiMutex = ModuleCc1101::getSpiSemaphore();
     xSemaphoreTake(spiMutex, portMAX_DELAY);
 
-    cc1101.addSpiPin(RF_SCK, RF_MISO, RF_MOSI, RF_CS, MODULE_2);
-    cc1101.addGDO0(RF_GDO0, MODULE_2);
-    cc1101.setModul(MODULE_2);
+    // Ensure pin assignments match the selected module
+    updatePinsForModule();
+    int gdo2Pin = (selectedModule == MODULE_1) ? MOD0_GDO2 : MOD1_GDO2;
+
+    cc1101.addSpiPin(RF_SCK, RF_MISO, RF_MOSI, RF_CS, selectedModule);
+    // Use addGDO() (not addGDO0!) to preserve gdo_set[]=2.
+    // addGDO0() sets gdo_set to 1 which causes setModul() to configure
+    // GDO0 as INPUT, breaking transmission for all other module users
+    // (CC1101Worker jammer, transmitter, etc.).
+    cc1101.addGDO(RF_GDO0, gdo2Pin, selectedModule);
+    cc1101.setModul(selectedModule);
     if (!cc1101.getCC1101()) {
         xSemaphoreGive(spiMutex);
         return false;
@@ -92,6 +119,10 @@ bool BruterModule::setupCC1101() {
     cc1101.setPA(10);
     cc1101.SetTx();
     pinMode(RF_TX, OUTPUT);
+
+    // Reset cached frequency so the first setFrequencyCorrected() call
+    // actually writes the FREQ registers and re-triggers PLL calibration
+    current_mhz = 0.0f;
 
     xSemaphoreGive(spiMutex);
     return true;
@@ -105,8 +136,14 @@ void BruterModule::setFrequencyCorrected(float target_mhz) {
     // Acquire shared SPI semaphore — setMHZ() writes to the CC1101 over SPI
     SemaphoreHandle_t spiMutex = ModuleCc1101::getSpiSemaphore();
     xSemaphoreTake(spiMutex, portMAX_DELAY);
-    cc1101.setModul(MODULE_2);  // Ensure currentModule targets MODULE_2
-    cc1101.setMHZ(corrected_mhz);
+    cc1101.setModul(selectedModule);  // Ensure currentModule targets the selected module
+    // CC1101 datasheet: FREQ registers should be written in IDLE state.
+    // Auto-calibration (MCSM0=0x18) only occurs on IDLE→TX/RX transitions.
+    // Without going IDLE first, the PLL won't lock to the new frequency.
+    cc1101.setSidle();
+    cc1101.setMHZ(corrected_mhz);    // Writes FREQ regs + calls Calibrate()
+    cc1101.SetTx();                   // IDLE→TX triggers auto-calibration + PLL lock
+    delay(1);                         // Allow PLL to settle
     xSemaphoreGive(spiMutex);
     current_mhz = corrected_mhz;
 }
@@ -136,6 +173,20 @@ void BruterModule::attackTaskFunc(void* param) {
     // Resume sets resumeFromCode > 0 before task creation.
     if (bruter.resumeFromCode == 0) {
         BruterStateManager::clearState();
+    }
+
+    // *** CRITICAL: Re-initialize CC1101 for TX before EVERY attack ***
+    // Between boot and attack start, other modules (CC1101Worker detect/record/jam)
+    // may have reconfigured the CC1101 into RX or IDLE mode.
+    // setupCC1101() restores: PKT_FORMAT=3 (async serial), ASK/OOK modulation,
+    // PA power, SetTx() strobe, and pinMode(GDO0, OUTPUT).
+    if (!bruter.setupCC1101()) {
+        ESP_LOGE("Bruter", "Failed to re-initialize CC1101 for TX — aborting attack");
+        bruter.currentMenuId = 0;
+        bruter.attackRunning = false;
+        attackTaskHandle = nullptr;
+        vTaskDelete(NULL);
+        return;  // Never reached, but makes intent clear
     }
 
     bruter.executeMenu(choice);

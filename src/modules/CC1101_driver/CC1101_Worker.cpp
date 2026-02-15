@@ -1,5 +1,6 @@
 #include "CC1101_Worker.h"
 #include <sstream>  // Moved here from CC1101_Worker.h — only used in this .cpp
+#include <LittleFS.h>  // For pathType 4 (internal flash) transmit support
 #include "FlipperSubFile.h"
 #include "modules/subghz_function/StreamingSubFileParser.h"
 #include "StreamingPulsePayload.h"
@@ -904,29 +905,44 @@ bool CC1101Worker::transmitRaw(int module, float frequency, int modulation, floa
 std::string CC1101Worker::transmitSub(const std::string& filename, int module, int repeat, int pathType)
 {
     std::string fullPath;
+    // Determine filesystem: pathType 4 = LittleFS, all others = SD
+    bool useLittleFS = (pathType == 4);
+    fs::FS& fs = useLittleFS ? (fs::FS&)LittleFS : (fs::FS&)SD;
+
     // If path is already absolute (/DATA/...), use it directly
     if (filename.find("/DATA/") == 0) {
         fullPath = filename;
         ESP_LOGD(TAG, "Using full system path: %s", fullPath.c_str());
     } else {
         // Use pathType to determine subdirectory
+        // 0=RECORDS, 1=SIGNALS, 2=PRESETS, 3=TEMP, 4=INTERNAL(LittleFS root), 5=SD root
         static const char* DIRS[] = {"/DATA/RECORDS", "/DATA/SIGNALS", "/DATA/PRESETS", "/DATA/TEMP"};
         if (pathType >= 0 && pathType < 4) {
             fullPath = std::string(DIRS[pathType]) + "/" + filename;
             ESP_LOGD(TAG, "Using pathType %d: %s", pathType, DIRS[pathType]);
+        } else if (pathType == 4 || pathType == 5) {
+            // Root-based storage: LittleFS root (4) or SD root (5)
+            // filename is relative to root, ensure it starts with "/"
+            if (!filename.empty() && filename[0] == '/') {
+                fullPath = filename;
+            } else {
+                fullPath = "/" + filename;
+            }
+            ESP_LOGI(TAG, "Using pathType %d (%s root): %s",
+                     pathType, useLittleFS ? "LittleFS" : "SD", fullPath.c_str());
         } else {
             fullPath = std::string("/DATA/RECORDS/") + filename;
             ESP_LOGW(TAG, "Unknown pathType %d; default RECORDS", pathType);
         }
         ESP_LOGD(TAG, "Added base path, full path: %s", fullPath.c_str());
     }
-    ESP_LOGI(TAG, "Opening file: %s", fullPath.c_str());
-    if (!SD.exists(fullPath.c_str())) {
+    ESP_LOGI(TAG, "Opening file: %s (fs=%s)", fullPath.c_str(), useLittleFS ? "LittleFS" : "SD");
+    if (!fs.exists(fullPath.c_str())) {
         std::string msg = "File does not exist: " + fullPath;
         ESP_LOGE(TAG, "%s", msg.c_str());
         return msg;
     }
-    File file = SD.open(fullPath.c_str(), FILE_READ);
+    File file = fs.open(fullPath.c_str(), FILE_READ);
     if (!file) {
         std::string msg = "Failed to open file: " + fullPath;
         ESP_LOGE(TAG, "%s", msg.c_str());
@@ -934,6 +950,13 @@ std::string CC1101Worker::transmitSub(const std::string& filename, int module, i
     }
     ESP_LOGD(TAG, "File opened successfully, size: %d bytes", file.size());
     file.close(); // Close immediately - will reopen for streaming
+
+    // Transmission from LittleFS is not supported yet (parsers use SD internally)
+    if (useLittleFS) {
+        std::string msg = "Transmission from internal flash (LittleFS) not supported";
+        ESP_LOGE(TAG, "%s", msg.c_str());
+        return msg;
+    }
     
     // OPTIMIZED: Use StreamingSubFileParser (minimal RAM usage!)
     StreamingSubFileParser streamParser;
@@ -1498,9 +1521,37 @@ void CC1101Worker::processJamming(int module) {
             config.isCooldown = false;
             config.startTimeMs = currentTime; // Reset timer for new cycle
             
-            // Resume transmission
+            // Resume transmission — MUST use setTxWithPreset() to re-apply the
+            // full preset (Ook650) including FREND0=0x11. Plain setTx() calls Init()
+            // which resets ALL registers to POR defaults; FREND0 reverts to 0x10.
+            // With ASK/OOK PA_TABLE {0x00, power, 0...}, FREND0[2:0]=0 selects
+            // PA_TABLE[0]=0x00 → ZERO RF output after cooldown.
             ModuleCc1101& m = moduleCC1101State[module];
-            m.setTx(config.frequency);
+            
+            const uint8_t* basePreset = subghz_device_cc1101_preset_ook_650khz_async_regs;
+            static uint8_t resumePresetBytes[44];
+            memcpy(resumePresetBytes, basePreset, 44);
+            m.setTxWithPreset(config.frequency, resumePresetBytes, 44);
+            delay(20);
+            
+            // Re-calibrate and re-apply power after preset
+            m.calibrate();
+            m.waitForCalibration(100);
+            
+            int powerDbm = -30;
+            if (config.power == 1) powerDbm = -20;
+            else if (config.power == 2) powerDbm = -15;
+            else if (config.power == 3) powerDbm = -10;
+            else if (config.power == 4) powerDbm = 0;
+            else if (config.power == 5) powerDbm = 5;
+            else if (config.power == 6) powerDbm = 7;
+            else if (config.power >= 7) powerDbm = 10;
+            m.setPA(powerDbm);
+            delay(10);
+            
+            // Force re-initialization of GDO0 pin drive on next processJamming() call
+            config.pinInitialized = false;
+            config.fifoInitialized = false;
         } else {
             // Still in cooldown - just exit
             return;

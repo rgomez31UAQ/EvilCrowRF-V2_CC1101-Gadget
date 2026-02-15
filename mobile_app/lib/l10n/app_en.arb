@@ -118,6 +118,7 @@
     }
   },
   "unknownDevice": "Unknown Device",
+  "noSupportedDevicesShowAll": "No supported devices found. Select your device manually:",
   
   "notConnectedToDevice": "Not connected to device",
   "connectToDeviceToManageFiles": "Connect to a device to manage files",
@@ -1054,6 +1055,7 @@
   "appSettings": "App Settings",
   "appSettingsSubtitle": "Language, cache, permissions",
   "rfSettings": "RF Settings",
+  "rfSettingsSubtitle": "Bruteforce, Radio & Scanner settings",
   "syncedWithDevice": "Synced with device",
   "localOnly": "Local only",
   "bruteforceSettings": "Bruteforce Settings",

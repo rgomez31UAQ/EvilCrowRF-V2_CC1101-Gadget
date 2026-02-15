@@ -48,7 +48,7 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
   
   // Files from current recording session
   final List<String> _currentSessionFiles = [];
-  
+
   // Flags for tracking changes
   final List<bool> _configsChanged = [];
   
@@ -95,7 +95,7 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
     print('_onRecordedFilesChanged called');
     final runtimeFiles = _bleProvider?.recordedRuntimeFiles ?? [];
     print('Runtime files: $runtimeFiles');
-    
+
     // Add new files to local recorded files list
     for (final file in runtimeFiles) {
       // Extract filename from object
@@ -931,7 +931,7 @@ class _RecordScreenState extends State<RecordScreen> with TickerProviderStateMix
               ),
               
               const SizedBox(height: 12),
-              
+
               // File list only for Recording
               if (selectedAction == ModuleAction.recording)
                 _buildModuleFilesList(moduleIndex),

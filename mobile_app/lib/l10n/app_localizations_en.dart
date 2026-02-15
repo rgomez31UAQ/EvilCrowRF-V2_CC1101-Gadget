@@ -166,6 +166,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get unknownDevice => 'Unknown Device';
 
   @override
+  String get noSupportedDevicesShowAll =>
+      'No supported devices found. Select your device manually:';
+
+  @override
   String get notConnectedToDevice => 'Not connected to device';
 
   @override
@@ -1491,6 +1495,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get rfSettings => 'RF Settings';
+
+  @override
+  String get rfSettingsSubtitle => 'Bruteforce, Radio & Scanner settings';
 
   @override
   String get syncedWithDevice => 'Synced with device';
