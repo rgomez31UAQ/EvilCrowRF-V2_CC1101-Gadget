@@ -7,15 +7,15 @@
 class NrfJamModeConfig {
   int paLevel;       // 0-3 (0=MIN -18dBm, 3=MAX → +20dBm with PA)
   int dataRate;      // 0=1Mbps, 1=2Mbps, 2=250Kbps
-  int dwellTimeMs;   // Time on each channel in ms (1-200)
+  int dwellTimeMs;   // Time on each channel in ms (0-200, 0=turbo)
   bool useFlooding;  // false=Constant Carrier (CW), true=Data Flooding
   int floodBursts;   // Number of flood packets per channel hop (1-10)
 
   NrfJamModeConfig({
     this.paLevel = 3,
     this.dataRate = 1,
-    this.dwellTimeMs = 5,
-    this.useFlooding = true,
+    this.dwellTimeMs = 0,
+    this.useFlooding = false,
     this.floodBursts = 3,
   });
 
@@ -40,8 +40,8 @@ class NrfJamModeConfig {
     return NrfJamModeConfig(
       paLevel: data['paLevel'] ?? 3,
       dataRate: data['dataRate'] ?? 1,
-      dwellTimeMs: data['dwellTimeMs'] ?? 5,
-      useFlooding: data['useFlooding'] ?? true,
+      dwellTimeMs: data['dwellTimeMs'] ?? 0,
+      useFlooding: data['useFlooding'] ?? false,
       floodBursts: data['floodBursts'] ?? 3,
     );
   }

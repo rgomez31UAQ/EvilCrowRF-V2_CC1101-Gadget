@@ -53,7 +53,7 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
   int _hopStart = 0;
   int _hopStop = 80;
   int _hopStep = 2;
-  int _liveDwellMs = 5;          // Live dwell slider value
+  int _liveDwellMs = 0;          // Live dwell slider value (0=turbo)
 
 
   // MouseJack filter
@@ -208,7 +208,7 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
     // Read current dwell from cached config for the live slider
     final cachedCfg = bleProvider.nrfJamModeConfigs[_jamMode];
     setState(() {
-      _liveDwellMs = cachedCfg?['dwellTimeMs'] ?? 5;
+      _liveDwellMs = cachedCfg?['dwellTimeMs'] ?? 0;
     });
   }
 
@@ -877,19 +877,19 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
               icon: Icons.speed,
               child: Column(
                 children: [
-                  Text('$_liveDwellMs ms',
+                  Text(_liveDwellMs == 0 ? 'TURBO' : '$_liveDwellMs ms',
                       style: TextStyle(
                           color: AppColors.primaryAccent,
                           fontSize: 18,
                           fontWeight: FontWeight.bold)),
                   const SizedBox(height: 4),
-                  Text('Time spent on each channel hop',
+                  Text('Time spent on each channel hop (0 = turbo, max speed)',
                       style: TextStyle(color: AppColors.secondaryText, fontSize: 11)),
                   Slider(
                     value: _liveDwellMs.toDouble(),
-                    min: 1,
+                    min: 0,
                     max: 200,
-                    divisions: 199,
+                    divisions: 200,
                     activeColor: AppColors.primaryAccent,
                     onChanged: (v) {
                       setState(() => _liveDwellMs = v.round());
@@ -901,7 +901,7 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text('1 ms', style: TextStyle(color: AppColors.disabledText, fontSize: 10)),
+                      Text('0 (Turbo)', style: TextStyle(color: AppColors.disabledText, fontSize: 10)),
                       Text('100 ms', style: TextStyle(color: AppColors.disabledText, fontSize: 10)),
                       Text('200 ms', style: TextStyle(color: AppColors.disabledText, fontSize: 10)),
                     ],
@@ -954,7 +954,19 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
       NrfJamModeUiData modeData, BleProvider bleProvider, bool jammerRunning) {
     final isSelected = _jamMode == modeData.mode;
     return GestureDetector(
-      onTap: jammerRunning ? null : () => setState(() => _jamMode = modeData.mode),
+      onTap: () async {
+        setState(() => _jamMode = modeData.mode);
+        if (jammerRunning) {
+          // Send live mode change command (0x2C) to firmware
+          final cmd = FirmwareBinaryProtocol.createNrfJamSetModeCommand(modeData.mode);
+          await bleProvider.sendBinaryCommand(cmd);
+          // Update cached dwell for the live slider
+          final cachedCfg = bleProvider.nrfJamModeConfigs[modeData.mode];
+          setState(() {
+            _liveDwellMs = cachedCfg?['dwellTimeMs'] ?? 0;
+          });
+        }
+      },
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 3),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -1031,8 +1043,8 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
     final cachedCfg = bleProvider.nrfJamModeConfigs[mode];
     int pa = cachedCfg?['paLevel'] ?? 3;
     int dr = cachedCfg?['dataRate'] ?? 1;
-    int dwell = cachedCfg?['dwellTimeMs'] ?? 5;
-    bool flood = cachedCfg?['useFlooding'] ?? true;
+    int dwell = cachedCfg?['dwellTimeMs'] ?? 0;
+    bool flood = cachedCfg?['useFlooding'] ?? false;
     int bursts = cachedCfg?['floodBursts'] ?? 3;
     final modeLabel = NrfJamModeUiData.allModes[mode].label;
 
@@ -1090,13 +1102,13 @@ class _NrfScreenState extends State<NrfScreen> with SingleTickerProviderStateMix
                     const SizedBox(height: 12),
 
                     // Dwell Time
-                    Text('Dwell Time: $dwell ms',
+                    Text(dwell == 0 ? 'Dwell Time: TURBO (0 ms)' : 'Dwell Time: $dwell ms',
                         style: TextStyle(color: AppColors.secondaryText, fontSize: 12)),
                     Slider(
                       value: dwell.toDouble(),
-                      min: 1,
+                      min: 0,
                       max: 200,
-                      divisions: 199,
+                      divisions: 200,
                       activeColor: AppColors.primaryAccent,
                       onChanged: (v) => setDialogState(() => dwell = v.round()),
                     ),

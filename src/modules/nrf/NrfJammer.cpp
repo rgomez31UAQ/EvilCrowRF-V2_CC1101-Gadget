@@ -4,16 +4,19 @@
  *
  * Hardware: E01-ML01SP2 (NRF24L01+ with PA+LNA, up to +20 dBm).
  *
- * Primary jamming strategy: **Data Flooding** (writeFast bursts).
- * Sends garbage packets at maximum throughput, creating real packet
- * collisions and CRC corruption on the target channel.  This is more
- * effective than CW in practice because modern receivers use frequency
- * diversity and error correction that resist a simple carrier tone.
+ * Primary jamming strategy: **Constant Carrier (CW)**.
+ * The nRF24L01+ is configured in continuous carrier mode (CONT_WAVE +
+ * PLL_LOCK). Channel hops are performed by writing RF_CH register
+ * directly — the PLL re-locks in ~130µs while the carrier never fully
+ * turns off. This gives near-100% TX duty cycle and is proven reliable
+ * for disrupting receivers via AGC saturation.
  *
- * CW (Constant Carrier) is still available as a per-mode toggle for
- * special cases (e.g. disrupting analog video links).
+ * Data Flooding (writeFast bursts) is available as a per-mode option.
+ * Sends garbage packets creating packet collisions and CRC corruption.
+ * Best for channel-specific protocols (WiFi, BLE, Zigbee) but requires
+ * CE pin management and has lower effective duty cycle than CW.
  *
- * FHSS targets (Bluetooth, Drone) now use random channel hopping
+ * FHSS targets (Bluetooth, Drone) use random channel hopping
  * instead of sequential to de-correlate the jammer's pattern from
  * the target's hopping sequence.
  *
@@ -21,7 +24,7 @@
  * flooding toggle, flood bursts) stored in flash and configurable
  * from the app.  The **dwell time** (ms on each channel before hop)
  * is the most impactful parameter for jam effectiveness.
- *  - Too low → target escapes between hops
+ *  - 0 = turbo: hop as fast as SPI allows (~20µs overhead)
  *  - Too high → misses FHSS or multi-channel targets
  *
  * Channel mappings (nRF24 channel N = 2400 + N MHz):
@@ -70,55 +73,56 @@ static const char* NRF_JAM_CONFIG_PATH = "/nrf_jam_cfg.bin";
 // These are tuned for the E01-ML01SP2 (PA+LNA) module.
 // PA level 3 = chip 0dBm → module amplifies to ~+20dBm.
 //
-// Key insight on dwell time:
+// Dwell time notes (for users who want to tune away from turbo):
 //  - WiFi frames: 1-10ms → dwell 4ms covers most frame durations
 //  - BLE adv:  376µs-2ms but only 3 channels → dwell 15ms each
 //  - BLE data: ~1ms packets, 40 channels → dwell 2ms balances speed/coverage
 //  - BT classic: 625µs slots, 79 FHSS channels → dwell 1ms for speed
 //  - Zigbee: 4ms frames, 16 channels → dwell 4ms per sub-channel
 //  - Drone: random FHSS → 1ms fast random hop
-//  - Full: 125 channels → 1ms = 125ms per sweep (acceptable)
+//  - Full: 125 channels → 1ms = 125ms per sweep
+//
+// Default: dwell=0 (turbo) for ALL modes.  CW carrier stays on,
+// hops as fast as SPI allows (~150µs/hop).  Users can increase
+// dwell via the app if needed for specific targets.
 
 void NrfJammer::setDefaults() {
     // Optimal defaults for E01-ML01SP2 (NRF24L01+ with PA+LNA, ~+20 dBm).
     //
     // Key parameters and reasoning:
     //   PA level 3   → chip 0 dBm → PA amplifies to ~+20 dBm
-    //   Data rate 1   → 2 Mbps — fastest air rate, maximises packet throughput
-    //                             for flooding; CW is unmodulated regardless.
-    //   useFlooding 1 → Data flooding sends collision packets (per-bit corruption).
-    //                   Constant Carrier (CW) creates a DC offset in demod.
+    //   Data rate 1   → 2 Mbps — fastest air rate (CW is unmodulated
+    //                   regardless, but 2Mbps matters for flooding mode).
+    //   useFlooding 0 → CW default: unmodulated carrier saturates receiver
+    //                   AGC and disrupts PLL lock.  Proven reliable and
+    //                   gives near-100% duty cycle (carrier never off).
+    //   dwellTimeMs 0 → Turbo: hop as fast as SPI allows (~20µs).
+    //                   For 125ch full sweep = ~2.5ms per cycle.
+    //   floodBursts   → packets written into FIFO per channel visit
+    //                   (used only when useFlooding=1).
     //
-    //   dwellTimeMs   → Critical: how long we stay on ONE channel before hopping.
-    //                   Too low → target escapes between hops.
-    //                   Too high → miss other channels.
+    // Default strategy: CW for ALL modes.
+    //   The carrier stays on continuously — cwOnChannel() only writes
+    //   the RF_CH register to hop; PLL re-locks in ~130µs without
+    //   any carrier gap.  This is the proven approach from the original
+    //   jammer implementation.
     //
-    //   floodBursts   → packets written into FIFO per channel visit.
-    //                   3 bursts × 32 B at 2 Mbps ≈ 384 µs airtime.
-    //
-    // Flood vs CW strategy per mode:
-    //   Data Flooding (1): Creates packet collisions — best for channel-
-    //     specific protocols (WiFi, BLE, Zigbee) where the target stays
-    //     on known channels and error correction can be overwhelmed.
-    //   Constant Carrier CW (0): Unmodulated RF saturates receiver AGC
-    //     and disrupts PLL lock — best for FHSS targets (BT classic,
-    //     Drones, RC) and analog links (video) where the target hops
-    //     unpredictably and a strong carrier is more disruptive than
-    //     short packet bursts.
+    //   Data Flooding remains available via per-mode config for users
+    //   who want packet collision attacks on specific protocols.
     //
     //                                    PA  DR   dwell  flood  bursts
-    modeConfigs_[NRF_JAM_FULL]       = { 3,  1,   1,     1,     3 };  // Flood: fast sweep
-    modeConfigs_[NRF_JAM_WIFI]       = { 3,  1,   4,     1,     3 };  // Flood: WiFi frames 1-10ms → 4ms dwell
-    modeConfigs_[NRF_JAM_BLE]        = { 3,  1,   2,     1,     3 };  // Flood: BLE data 40ch
-    modeConfigs_[NRF_JAM_BLE_ADV]    = { 3,  1,  15,     1,     3 };  // Flood: only 3 ch → high dwell
-    modeConfigs_[NRF_JAM_BLUETOOTH]  = { 3,  1,   1,     0,     3 };  // CW: FHSS target — fast random hop
-    modeConfigs_[NRF_JAM_USB]        = { 3,  1,  10,     1,     3 };  // Flood: 3 ch → high dwell
-    modeConfigs_[NRF_JAM_VIDEO]      = { 3,  1,  10,     0,     3 };  // CW: analog video links
-    modeConfigs_[NRF_JAM_RC]         = { 3,  1,  10,     0,     3 };  // CW: FHSS RC protocols
-    modeConfigs_[NRF_JAM_SINGLE]     = { 3,  1,   1,     0,     3 };  // CW: single channel saturation
-    modeConfigs_[NRF_JAM_HOPPER]     = { 3,  1,   3,     1,     3 };  // Flood: custom range (user picks)
-    modeConfigs_[NRF_JAM_ZIGBEE]     = { 3,  1,   4,     1,     3 };  // Flood: Zigbee 48 sub-ch
-    modeConfigs_[NRF_JAM_DRONE]      = { 3,  1,   1,     0,     3 };  // CW: FHSS drone — random hop
+    modeConfigs_[NRF_JAM_FULL]       = { 3,  1,   0,     0,     3 };  // CW turbo: rapid sweep all 125ch
+    modeConfigs_[NRF_JAM_WIFI]       = { 3,  1,   0,     0,     3 };  // CW turbo: fast WiFi sweep
+    modeConfigs_[NRF_JAM_BLE]        = { 3,  1,   0,     0,     3 };  // CW turbo: fast BLE data sweep
+    modeConfigs_[NRF_JAM_BLE_ADV]    = { 3,  1,   0,     0,     3 };  // CW turbo: only 3ch, rapid cycling
+    modeConfigs_[NRF_JAM_BLUETOOTH]  = { 3,  1,   0,     0,     3 };  // CW turbo: FHSS random hop
+    modeConfigs_[NRF_JAM_USB]        = { 3,  1,   0,     0,     3 };  // CW turbo: 3ch rapid cycling
+    modeConfigs_[NRF_JAM_VIDEO]      = { 3,  1,   0,     0,     3 };  // CW turbo: analog video links
+    modeConfigs_[NRF_JAM_RC]         = { 3,  1,   0,     0,     3 };  // CW turbo: RC protocols
+    modeConfigs_[NRF_JAM_SINGLE]     = { 3,  1,   0,     0,     3 };  // CW turbo: single channel saturation
+    modeConfigs_[NRF_JAM_HOPPER]     = { 3,  1,   0,     0,     3 };  // CW turbo: custom range hopper
+    modeConfigs_[NRF_JAM_ZIGBEE]     = { 3,  1,   0,     0,     3 };  // CW turbo: Zigbee sub-channels
+    modeConfigs_[NRF_JAM_DRONE]      = { 3,  1,   0,     0,     3 };  // CW turbo: FHSS drone random hop
 }
 
 // ── Channel lists for each jamming mode ─────────────────────────
@@ -201,15 +205,15 @@ static const NrfJamModeInfo MODE_INFO_TABLE[NRF_JAM_MODE_COUNT] = {
       nullptr, 125, 2400, 2525 },
     // NRF_JAM_WIFI (1)
     { "WiFi 2.4GHz", "Targets WiFi channels 1, 6, 11 (most common non-overlapping). "
-      "Floods 22 MHz bandwidth per WiFi channel. 33 nRF sub-channels.",
+      "CW sweeps 22 MHz bandwidth per WiFi channel. 33 nRF sub-channels.",
       JAM_WIFI_CHANNELS, sizeof(JAM_WIFI_CHANNELS), 2401, 2473 },
     // NRF_JAM_BLE (2)
     { "BLE Data", "BLE data channels 0-36 mapped to nRF ch 2-80 (even). "
-      "Data flooding creates packet collisions on active connections.",
+      "CW turbo sweeps all 40 data channels. Flooding available as option.",
       JAM_BLE_CHANNELS, sizeof(JAM_BLE_CHANNELS), 2402, 2480 },
     // NRF_JAM_BLE_ADV (3)
     { "BLE Advertising", "Only 3 BLE advertising channels: 37(2402), 38(2426), 39(2480). "
-      "Blocks device discovery and pairing. High dwell = high effectiveness.",
+      "Blocks device discovery and pairing. CW turbo cycles rapidly.",
       JAM_BLE_ADV_CHANNELS, sizeof(JAM_BLE_ADV_CHANNELS), 2402, 2480 },
     // NRF_JAM_BLUETOOTH (4)
     { "Bluetooth Classic", "Classic BT uses FHSS across 79 channels (2402-2480 MHz). "
@@ -217,7 +221,7 @@ static const NrfJamModeInfo MODE_INFO_TABLE[NRF_JAM_MODE_COUNT] = {
       JAM_BLUETOOTH_CHANNELS, sizeof(JAM_BLUETOOTH_CHANNELS), 2402, 2480 },
     // NRF_JAM_USB (5)
     { "USB Wireless", "Wireless USB dongles typically use channels 40, 50, 60. "
-      "CW on these 3 channels with high dwell time.",
+      "CW turbo on these 3 channels. Increase dwell if needed.",
       JAM_USB_CHANNELS, sizeof(JAM_USB_CHANNELS), 2440, 2460 },
     // NRF_JAM_VIDEO (6)
     { "Video Streaming", "Analog/digital 2.4GHz video transmitters (FPV, baby monitors). "
@@ -225,7 +229,7 @@ static const NrfJamModeInfo MODE_INFO_TABLE[NRF_JAM_MODE_COUNT] = {
       JAM_VIDEO_CHANNELS, sizeof(JAM_VIDEO_CHANNELS), 2470, 2480 },
     // NRF_JAM_RC (7)
     { "RC Controllers", "RC toys and drones on low channels 1, 3, 5, 7 (2401-2407 MHz). "
-      "Few channels — high dwell time recommended.",
+      "CW turbo on few channels. Increase dwell if needed.",
       JAM_RC_CHANNELS, sizeof(JAM_RC_CHANNELS), 2401, 2407 },
     // NRF_JAM_SINGLE (8)
     { "Single Channel", "Constant carrier or flood on one specific channel. "
@@ -328,7 +332,11 @@ const NrfJamModeInfo& NrfJammer::getModeInfo(NrfJamMode mode) {
 //   1 → 2: data-flooding as primary strategy (all modes)
 //   2 → 3: restored CW for FHSS targets (BT, Drone, RC, Video, Single)
 //          + continuous flooding (CE held HIGH) replaces pulsed writeFast
-#define NRF_JAM_CFG_VERSION 3
+//   3 → 4: CW as default for ALL modes (dwell=0 turbo).  CW carrier
+//          stays on during hops — cwOnChannel() only writes RF_CH,
+//          PLL re-locks in ~130µs with zero carrier gap.  Flooding
+//          remains available as user option.
+#define NRF_JAM_CFG_VERSION 4
 
 void NrfJammer::loadConfigs() {
     setDefaults();  // Always start from defaults
@@ -577,22 +585,26 @@ void NrfJammer::floodOnChannel(uint8_t channel, uint16_t dwellMs) {
 
 // ── CW (Constant Carrier) Hop Helper ───────────────────────────────
 //
-// For CW modes, vTaskDelay has 1ms minimum granularity which limits
-// channel hop speed to ~1000 hops/sec.  For FHSS targets (Bluetooth,
-// Drone) that hop every 625µs, we need faster hopping.
+// CRITICAL: The carrier MUST stay on during channel hops.
+// startConstCarrier() sets CONT_WAVE + PLL_LOCK bits and pulls CE HIGH
+// at init.  To hop, we ONLY write the RF_CH register — the PLL re-locks
+// to the new frequency in ~130µs while the carrier never fully turns off.
 //
-// This helper uses delayMicroseconds for sub-ms precision.
-// When dwellMs=0, it hops immediately with only SPI overhead (~20µs),
-// achieving ~50,000 hops/sec.  A taskYIELD() is issued every 64
-// iterations to prevent watchdog timeout.
+// Previous bug: ceLow() → setChannel() → ceHigh() created carrier gaps
+// of several hundred µs each hop.  Modern receivers easily survived
+// those gaps, making the jammer ineffective.
+//
+// With dwell=0 (turbo, the default), hopping is limited only by SPI
+// overhead (~20µs write) + PLL settling (~130µs) ≈ 150µs per hop,
+// giving ~6600 hops/sec across all 125 channels.
 
 void NrfJammer::cwOnChannel(uint8_t channel, uint16_t dwellMs) {
-    NrfModule::ceLow();
+    // Just change the frequency register — carrier stays on, PLL re-locks
+    // in ~130µs.  DO NOT touch CE (ceLow/ceHigh) here.
     NrfModule::setChannel(channel);
-    NrfModule::ceHigh();
 
     if (dwellMs == 0) {
-        // Turbo: no intentional delay, just SPI overhead (~20µs)
+        // Turbo: no intentional delay, just SPI + PLL overhead (~150µs)
         return;
     }
 
