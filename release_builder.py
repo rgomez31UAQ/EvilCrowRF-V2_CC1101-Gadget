@@ -30,11 +30,13 @@ import hashlib
 import json
 import os
 import platform
+import queue
 import re
 import shutil
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -48,6 +50,297 @@ CHANGELOG_FILE = RELEASES_DIR / "changelog.json"
 FW_RELEASES_DIR = RELEASES_DIR / "firmware"
 APP_RELEASES_DIR = RELEASES_DIR / "app"
 PIO_BUILD_DIR = PROJECT_ROOT / ".pio" / "build" / "esp32dev"
+
+
+# ─── GUI Root (set by launch_gui) ───────────────────────────────────
+
+_TK_ROOT = None
+
+
+def _ensure_tk_root_for_cli() -> bool:
+    """Ensure a hidden Tk root exists for CLI popups.
+
+    Returns True if a root exists (created or already present), False otherwise.
+    """
+    global _TK_ROOT
+    if _TK_ROOT is not None:
+        return True
+    if threading.current_thread() is not threading.main_thread():
+        return False
+    try:
+        import tkinter as tk
+
+        root = tk.Tk()
+        root.withdraw()
+        _set_tk_root(root)
+        return True
+    except Exception:
+        return False
+
+
+def _set_tk_root(root):
+    global _TK_ROOT
+    _TK_ROOT = root
+
+
+def _prompt_continue_or_terminate(message: str, title: str = "Timeout") -> bool:
+    """Ask the user whether to continue waiting.
+
+    Returns True to continue waiting, False to terminate.
+    """
+    if _TK_ROOT is not None:
+        # If we're on the Tk main thread (CLI popup mode), ask directly.
+        if threading.current_thread() is threading.main_thread():
+            from tkinter import messagebox
+
+            return bool(messagebox.askyesno(title, message, parent=_TK_ROOT))
+
+        result_holder: dict[str, bool] = {}
+        evt = threading.Event()
+
+        def _ask():
+            try:
+                from tkinter import messagebox
+
+                result_holder["answer"] = bool(
+                    messagebox.askyesno(title, message, parent=_TK_ROOT)
+                )
+            finally:
+                evt.set()
+
+        _TK_ROOT.after(0, _ask)
+        evt.wait()
+        return bool(result_holder.get("answer", False))
+
+    # CLI fallback
+    try:
+        ans = input(f"{title}: {message} [y/N]: ").strip().lower()
+    except EOFError:
+        return False
+    return ans in ("y", "yes")
+
+
+def _create_command_popup(title: str):
+    """Create a popup window that shows live command output.
+
+    Must be created on the Tk main thread; this helper schedules it via after().
+    Returns (enqueue_fn, stop_event, close_fn) or (None, stop_event, None) in CLI.
+    """
+    stop_event = threading.Event()
+    if _TK_ROOT is None:
+        # Try to enable popups even in CLI mode.
+        if not _ensure_tk_root_for_cli():
+            return None, stop_event, None
+
+    q: queue.Queue[str] = queue.Queue()
+    created_evt = threading.Event()
+    holder: dict[str, object] = {}
+
+    def _create():
+        import tkinter as tk
+        from tkinter import scrolledtext, ttk
+
+        win = tk.Toplevel(_TK_ROOT)
+        win.title(title)
+        win.geometry("920x520")
+
+        top = ttk.Frame(win)
+        top.pack(fill=tk.X, padx=8, pady=6)
+
+        ttk.Label(top, text=title).pack(side=tk.LEFT)
+
+        def _terminate():
+            stop_event.set()
+
+        ttk.Button(top, text="Terminate", command=_terminate).pack(side=tk.RIGHT)
+
+        text = scrolledtext.ScrolledText(
+            win,
+            height=20,
+            wrap=tk.WORD,
+            font=("Consolas", 10),
+        )
+        text.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+
+        def _on_close():
+            stop_event.set()
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+        win.protocol("WM_DELETE_WINDOW", _on_close)
+
+        def _pump():
+            if not win.winfo_exists():
+                return
+            try:
+                while True:
+                    line = q.get_nowait()
+                    text.insert(tk.END, line)
+                    text.see(tk.END)
+            except queue.Empty:
+                pass
+            win.after(80, _pump)
+
+        _pump()
+
+        holder["win"] = win
+        created_evt.set()
+
+    # If we're on the Tk main thread (CLI popup mode), create synchronously.
+    if threading.current_thread() is threading.main_thread():
+        _create()
+    else:
+        _TK_ROOT.after(0, _create)
+        created_evt.wait()
+
+    def enqueue(line: str):
+        q.put(line)
+
+    def close():
+        def _close():
+            win = holder.get("win")
+            try:
+                if win is not None and win.winfo_exists():
+                    win.destroy()
+            except Exception:
+                pass
+
+        if threading.current_thread() is threading.main_thread():
+            _close()
+        else:
+            _TK_ROOT.after(0, _close)
+
+    return enqueue, stop_event, close
+
+
+def run_command_verbose(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    timeout_s: int = 600,
+    title: str | None = None,
+    log_callback=None,
+    stdin_data: str | None = None,
+) -> int:
+    """Run a command with live output (popup in GUI) and interactive timeout.
+
+    - timeout_s should already be the desired (doubled) timeout.
+    - When timeout is reached, ask the user whether to continue waiting.
+    - If the user terminates (or presses Terminate), the process is stopped.
+    """
+
+    def log(msg: str):
+        if log_callback:
+            log_callback(msg)
+        else:
+            print(msg)
+
+    display_title = title or (" ".join(cmd) if cmd else "Command")
+    enqueue, stop_event, close_popup = _create_command_popup(display_title)
+
+    log(f"$ {' '.join(cmd)}")
+    if enqueue:
+        enqueue(f"$ {' '.join(cmd)}\n")
+
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.PIPE if stdin_data is not None else None,
+        text=True,
+        bufsize=1,
+        universal_newlines=True,
+    )
+
+    if stdin_data is not None and proc.stdin is not None:
+        try:
+            proc.stdin.write(stdin_data)
+            proc.stdin.flush()
+        except Exception:
+            pass
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+
+    def _reader():
+        try:
+            if proc.stdout is None:
+                return
+            for line in proc.stdout:
+                if enqueue:
+                    enqueue(line)
+                if log_callback:
+                    log_callback(line.rstrip("\n"))
+                else:
+                    print(line, end="")
+        except Exception as e:
+            if enqueue:
+                enqueue(f"\n[output reader error] {e}\n")
+
+    t = threading.Thread(target=_reader, daemon=True)
+    t.start()
+
+    # Re-prompt every timeout_s seconds.
+    deadline = time.monotonic() + max(1, timeout_s)
+    terminated_by_user = False
+
+    try:
+        while True:
+            # In CLI popup mode, we don't have mainloop(); pump Tk events.
+            if _TK_ROOT is not None and threading.current_thread() is threading.main_thread():
+                try:
+                    _TK_ROOT.update_idletasks()
+                    _TK_ROOT.update()
+                except Exception:
+                    pass
+
+            if stop_event.is_set():
+                terminated_by_user = True
+                break
+
+            rc = proc.poll()
+            if rc is not None:
+                return rc
+
+            now = time.monotonic()
+            if now >= deadline:
+                msg = (
+                    f"Command still running after {timeout_s}s:\n\n"
+                    f"{' '.join(cmd)}\n\n"
+                    "Continue waiting?"
+                )
+                if not _prompt_continue_or_terminate(msg):
+                    terminated_by_user = True
+                    break
+                deadline = time.monotonic() + max(1, timeout_s)
+
+            time.sleep(0.15)
+    finally:
+        if terminated_by_user and proc.poll() is None:
+            try:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            except Exception:
+                pass
+
+        try:
+            if proc.stdout is not None:
+                proc.stdout.close()
+        except Exception:
+            pass
+
+        t.join(timeout=1.0)
+        if close_popup:
+            close_popup()
+
+    return proc.poll() if proc.poll() is not None else 1
 
 
 # ─── Tool Discovery ─────────────────────────────────────────────────
@@ -199,12 +492,15 @@ def prepare_environment(log_callback=None) -> bool:
         if not venv_dir.exists():
             log(f"Creating venv: {venv_dir}")
             try:
-                result = subprocess.run(
+                rc = run_command_verbose(
                     [python_exe, "-m", "venv", str(venv_dir)],
-                    capture_output=True, text=True, timeout=60,
+                    cwd=PROJECT_ROOT,
+                    timeout_s=120,
+                    title="Create Python venv (tools/.venv)",
+                    log_callback=log,
                 )
-                if result.returncode != 0:
-                    log(f"ERROR: Failed to create venv:\n{result.stderr}")
+                if rc != 0:
+                    log("ERROR: Failed to create venv.")
                     return False
             except Exception as e:
                 log(f"ERROR: venv creation failed: {e}")
@@ -216,17 +512,17 @@ def prepare_environment(log_callback=None) -> bool:
         if not pio_exe.exists():
             log("Installing PlatformIO via pip (this may take a few minutes)...")
             try:
-                result = subprocess.run(
+                rc = run_command_verbose(
                     [str(pip_exe), "install", "--upgrade", "platformio"],
-                    capture_output=True, text=True, timeout=300,
+                    cwd=PROJECT_ROOT,
+                    timeout_s=600,
+                    title="pip install --upgrade platformio (tools/.venv)",
+                    log_callback=log,
                 )
-                if result.returncode != 0:
-                    log(f"ERROR: pip install platformio failed:\n{result.stderr}")
+                if rc != 0:
+                    log("ERROR: pip install platformio failed.")
                     return False
                 log("PlatformIO installed successfully!")
-            except subprocess.TimeoutExpired:
-                log("ERROR: PlatformIO installation timed out (300s)")
-                return False
             except Exception as e:
                 log(f"ERROR: PlatformIO installation failed: {e}")
                 return False
@@ -411,15 +707,15 @@ def build_firmware(log_callback=None) -> Path | None:
     log("Building firmware...")
 
     try:
-        result = subprocess.run(
+        rc = run_command_verbose(
             [pio_cli, "run", "-e", "esp32dev"],
-            cwd=str(PROJECT_ROOT),
-            capture_output=True, text=True, timeout=300,
+            cwd=PROJECT_ROOT,
+            timeout_s=600,
+            title="PlatformIO: build firmware (esp32dev)",
+            log_callback=log,
         )
-        if result.returncode != 0:
-            log(f"ERROR: Build failed!\n{result.stderr}")
-            if result.stdout:
-                log(result.stdout[-2000:])  # Last 2000 chars of output
+        if rc != 0:
+            log("ERROR: Build failed!")
             return None
 
         log("Build successful!")
@@ -432,9 +728,6 @@ def build_firmware(log_callback=None) -> Path | None:
         return None
     except FileNotFoundError:
         log(f"ERROR: Could not execute '{pio_cli}'. File not found.")
-        return None
-    except subprocess.TimeoutExpired:
-        log("ERROR: Build timed out (300s)")
         return None
 
 
@@ -557,37 +850,47 @@ def build_apk(log_callback=None) -> Path | None:
         if platform.system() == "Windows" and setup_script.exists():
             log("Setting up Android SDK (auto)...")
             try:
-                subprocess.run(
-                    ["powershell", "-ExecutionPolicy", "Bypass",
-                     "-NonInteractive", "-File", str(setup_script)],
-                    cwd=str(mobile_dir),
-                    capture_output=True, text=True, timeout=180,
-                    input="",  # Auto-enter for any Read-Host prompts
+                run_command_verbose(
+                    [
+                        "powershell",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-NonInteractive",
+                        "-File",
+                        str(setup_script),
+                    ],
+                    cwd=mobile_dir,
+                    timeout_s=360,
+                    title="Android SDK setup (PowerShell)",
+                    log_callback=log,
+                    stdin_data="\n",
                 )
             except (subprocess.TimeoutExpired, Exception) as e:
                 log(f"  Android SDK setup warning: {e}")
 
         # flutter pub get
         log("Running flutter pub get...")
-        result = subprocess.run(
+        rc = run_command_verbose(
             [flutter_cli, "pub", "get"],
-            cwd=str(mobile_dir),
-            capture_output=True, text=True, timeout=120,
+            cwd=mobile_dir,
+            timeout_s=240,
+            title="Flutter: pub get",
+            log_callback=log,
         )
-        if result.returncode != 0:
-            log(f"WARNING: flutter pub get failed:\n{result.stderr}")
+        if rc != 0:
+            log("WARNING: flutter pub get failed.")
 
         # flutter build apk --release
         log("Building APK (release mode)...")
-        result = subprocess.run(
+        rc = run_command_verbose(
             [flutter_cli, "build", "apk", "--release"],
-            cwd=str(mobile_dir),
-            capture_output=True, text=True, timeout=600,
+            cwd=mobile_dir,
+            timeout_s=1200,
+            title="Flutter: build apk --release",
+            log_callback=log,
         )
-        if result.returncode != 0:
-            log(f"ERROR: APK build failed!\n{result.stderr}")
-            if result.stdout:
-                log(result.stdout[-2000:])
+        if rc != 0:
+            log("ERROR: APK build failed!")
             return None
 
         log("APK build successful!")
@@ -600,9 +903,6 @@ def build_apk(log_callback=None) -> Path | None:
         return None
     except FileNotFoundError:
         log(f"ERROR: Could not execute '{flutter_cli}'. File not found.")
-        return None
-    except subprocess.TimeoutExpired:
-        log("ERROR: APK build timed out (600s)")
         return None
 
 
@@ -814,6 +1114,7 @@ def launch_gui():
     from tkinter import scrolledtext, ttk
 
     root = tk.Tk()
+    _set_tk_root(root)
     root.title("EvilCrow RF V2 — Release Builder")
     root.geometry("720x780")
     root.resizable(True, True)
