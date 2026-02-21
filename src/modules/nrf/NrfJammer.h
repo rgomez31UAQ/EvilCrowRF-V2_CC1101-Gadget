@@ -1,14 +1,19 @@
 /**
  * @file NrfJammer.h
- * @brief 2.4 GHz jammer using nRF24L01+ constant carrier and data flooding.
+ * @brief 2.4 GHz jammer using nRF24L01+ constant carrier (CW) as default.
  *
  * Supports multiple jamming modes: full-band, WiFi channels, BLE channels,
  * Bluetooth, BLE advertising, Zigbee, Drone, USB, video, RC, and custom
  * channel range hopping.
  *
- * Uses two jamming strategies depending on the target:
- *  - Constant Carrier (CW): Best for FHSS targets (Bluetooth, Drones)
- *  - Data Flooding (writeFast): Best for channel-specific targets (WiFi, BLE, Zigbee)
+ * Default strategy: Constant Carrier (CW).
+ * The carrier stays on continuously — channel hops only write the RF_CH
+ * register, PLL re-locks in ~130µs with zero carrier gap.  This gives
+ * near-100% TX duty cycle and proven effectiveness via AGC saturation.
+ *
+ * Optional strategy: Data Flooding (writeFast).
+ * Creates packet collisions, best for channel-specific protocols.
+ * User-selectable per mode via config.
  */
 
 #ifndef NRF_JAMMER_H
@@ -76,9 +81,9 @@ struct NrfJamModeInfo {
  *
  * Each of the 12 modes has independent RF parameters (PA, data rate,
  * dwell time, CW vs flooding) that can be adjusted from the app and
- * persisted in flash.  The dwell time is the key parameter for
- * jamming effectiveness: too fast and the target escapes between hops,
- * too slow and you miss FHSS channels.
+ * persisted in flash.  Default: CW turbo (dwell=0) for all modes.
+ * The carrier stays on during hops (PLL re-lock ~130µs, zero gap).
+ * Users can increase dwell or switch to flooding via the app.
  */
 class NrfJammer {
 public:
