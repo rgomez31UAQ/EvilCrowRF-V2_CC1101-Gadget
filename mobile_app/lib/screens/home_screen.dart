@@ -185,6 +185,31 @@ class _HomeScreenState extends State<HomeScreen> {
             );
             return;
           }
+
+          // Block NRF tab (index 2) if nRF module is not present
+          if (index == 2 && !bleProvider.nrfPresent) {
+            final l10n = AppLocalizations.of(context)!;
+            showDialog(
+              context: context,
+              builder: (context) => AlertDialog(
+                title: const Text(
+                  'nRF24 Not Detected',
+                  style: TextStyle(color: AppColors.primaryText),
+                ),
+                content: const Text(
+                  'The nRF24L01 module is not connected or not detected on this device.',
+                  style: TextStyle(color: AppColors.primaryText),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: Text(l10n.ok),
+                  ),
+                ],
+              ),
+            );
+            return;
+          }
           
           // Handle debug mode activation on Settings tap
           if (index == 4) {
@@ -219,7 +244,14 @@ class _HomeScreenState extends State<HomeScreen> {
             label: AppLocalizations.of(context)!.subGhzTab,
           ),
           BottomNavigationBarItem(
-            icon: const Icon(Icons.wifi_tethering),
+            icon: Consumer<BleProvider>(
+              builder: (context, ble, _) => Icon(
+                Icons.wifi_tethering,
+                color: (ble.isConnected && !ble.nrfPresent)
+                    ? Colors.grey.shade600
+                    : null,
+              ),
+            ),
             label: AppLocalizations.of(context)!.nrfTab,
           ),
           BottomNavigationBarItem(

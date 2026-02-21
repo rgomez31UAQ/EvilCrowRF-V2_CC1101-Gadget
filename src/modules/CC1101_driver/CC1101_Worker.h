@@ -20,7 +20,7 @@
 // Note: <sstream> moved to CC1101_Worker.cpp — only needed there
 
 // Receive data structure - moved from Recorder.h
-#define MAX_SAMPLES_BUFFER 512  // Reduced to 512 to save RAM (~4KB savings)
+#define MAX_SAMPLES_BUFFER 2048  // Increased for ProtoPirate automotive decoders
 
 struct ReceivedSamples
 {
@@ -59,7 +59,8 @@ enum class CC1101State {
     Recording,
     Transmitting,
     Analyzing,
-    Jamming
+    Jamming,
+    ProtoPirate   // Continuous RX managed by ProtoPirateModule's own task
 };
 
 // DetectedSignal structure (simplified from Detector.h)
@@ -155,6 +156,14 @@ public:
     
     // Find first idle module
     static int findFirstIdleModule();
+
+    // Public access to ISR sample data (for ProtoPirate and other modules)
+    static ReceivedSamples& getSamples(int module) { return receivedSamples[module]; }
+    static portMUX_TYPE& getSamplesMux(int module) { return samplesMuxes[module]; }
+
+    // ProtoPirate continuous RX — bypasses workerTask processRecording
+    static bool startProtoPirateRX(int module, float frequency);
+    static void stopProtoPirateRX(int module);
 
 private:
     static void workerTask(void* parameter);

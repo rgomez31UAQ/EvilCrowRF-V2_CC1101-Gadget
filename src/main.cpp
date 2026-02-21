@@ -13,6 +13,10 @@
 #include "ButtonCommands.h"
 #include "SdrCommands.h"
 #include "AllProtocols.h"
+#if PROTOPIRATE_MODULE_ENABLED
+#include "ProtoPirateCommands.h"
+#include "modules/protopirate/ProtoPirateModule.h"
+#endif
 #include "modules/bruter/bruter_main.h"
 #include "core/ble/ClientsManager.h"
 #include "ConfigManager.h"
@@ -688,6 +692,9 @@ void setup()
     TransmitterCommands::registerCommands(commandHandler);
     RecorderCommands::registerCommands(commandHandler);
     BruterCommands::registerCommands(commandHandler);
+#if PROTOPIRATE_MODULE_ENABLED
+    ProtoPirateCommands::registerCommands(commandHandler);
+#endif
     NrfCommands::registerCommands(commandHandler);
     OtaCommands::registerCommands(commandHandler);
     ButtonCommands::registerCommands(commandHandler);
@@ -707,6 +714,16 @@ void setup()
         BruterModule& bruter = getBruterModule();
         bruter.checkAndNotifySavedState();
     }
+
+#if PROTOPIRATE_MODULE_ENABLED
+    // Initialize ProtoPirate module
+    ESP_LOGI(TAG, "Initializing ProtoPirate module...");
+    if (!ProtoPirateModule::getInstance().init()) {
+        ESP_LOGE(TAG, "Failed to initialize ProtoPirate module!");
+    } else {
+        ESP_LOGI(TAG, "ProtoPirate module initialized successfully");
+    }
+#endif
 
     // Apply persistent settings to runtime modules (bruter delay, repeats, etc.)
     ConfigManager::applyToRuntime();

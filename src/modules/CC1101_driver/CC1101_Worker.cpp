@@ -271,6 +271,10 @@ void CC1101Worker::workerTask(void* parameter) {
                     processJamming(module);
                     break;
                     
+                case CC1101State::ProtoPirate:
+                    // Handled by ProtoPirateModule's own task — do NOT touch samples
+                    break;
+
                 case CC1101State::Idle:
                 case CC1101State::Transmitting:
                 default:
@@ -440,9 +444,63 @@ void CC1101Worker::handleStopRecord(int module) {
     moduleCC1101State[module].setSidle();
     moduleCC1101State[module].unlock();
     clearReceivedSamples(module);
+
+    // Send notification BEFORE updating state so previousMode is correct
+    sendModeNotification(module, CC1101State::Idle);
     moduleStates[module] = CC1101State::Idle;
-    
-    // Send mode switch notification
+}
+
+// =====================================================================
+//  ProtoPirate continuous RX — bypasses workerTask processRecording
+// =====================================================================
+
+bool CC1101Worker::startProtoPirateRX(int module, float frequency) {
+    if (module < 0 || module >= CC1101_NUM_MODULES) return false;
+    if (moduleStates[module] != CC1101State::Idle) {
+        ESP_LOGW(TAG, "Module %d not idle (state=%d), cannot start ProtoPirate RX",
+                 module, (int)moduleStates[module]);
+        return false;
+    }
+
+    // Stop any lingering operation
+    handleGoIdle(module);
+
+    // Configure CC1101 for OOK RX at the requested frequency
+    moduleCC1101State[module].setReceiveConfig(
+        frequency,
+        false,                // not FSK
+        MODULATION_ASK_OOK,   // ASK/OOK
+        650.0f,               // Wide RX bandwidth for automotive fobs
+        0.0f,                 // No deviation for OOK
+        3.79372f              // Data rate
+    ).initConfig();
+
+    // Clear old samples and attach ISR
+    clearReceivedSamples(module);
+    addModuleReceiver(module);
+
+    // Set state so workerTask ignores this module
+    // Send notification BEFORE updating state so previousMode is correct
+    sendModeNotification(module, CC1101State::ProtoPirate);
+    moduleStates[module] = CC1101State::ProtoPirate;
+
+    int gdo0Pin = moduleCC1101State[module].getInputPin();
+    ESP_LOGI(TAG, "ProtoPirate RX started on module %d, pin %d, freq=%.2f MHz",
+             module, gdo0Pin, frequency);
+    return true;
+}
+
+void CC1101Worker::stopProtoPirateRX(int module) {
+    if (module < 0 || module >= CC1101_NUM_MODULES) return;
+    if (moduleStates[module] != CC1101State::ProtoPirate) return;
+
+    removeModuleReceiver(module);
+    moduleCC1101State[module].setSidle();
+    moduleCC1101State[module].unlock();
+    clearReceivedSamples(module);
+    moduleStates[module] = CC1101State::Idle;
+
+    ESP_LOGI(TAG, "ProtoPirate RX stopped on module %d", module);
     sendModeNotification(module, CC1101State::Idle);
 }
 
@@ -545,6 +603,10 @@ void CC1101Worker::handleGoIdle(int module) {
             
         case CC1101State::Jamming:
             handleStopJam(module);
+            break;
+
+        case CC1101State::ProtoPirate:
+            stopProtoPirateRX(module);
             break;
             
         case CC1101State::Transmitting:

@@ -46,6 +46,14 @@ enum BinaryMessageType {
   hwButtonStatus(0xC8),     // HW button config sync
   sdStatus(0xC9),           // SD card storage info
   nrfModuleStatus(0xCA),    // nRF24 module presence/state
+  // ProtoPirate (automotive key fob decoder) notifications
+  ppDecodeResult(0xB5),     // Decoded signal result
+  ppHistoryEntry(0xB6),     // History entry with timestamp
+  ppStatus(0xB7),           // Module status (state, module, freq)
+  ppHistoryCount(0xB8),     // History entry count
+  ppFileList(0xB9),         // File list response
+  ppTxStatus(0xBA),         // TX emulate status
+  ppSaveResult(0xBB),       // Save capture result
   error(0xF0),
   lowMemory(0xF1),
   commandSuccess(0xF2),
@@ -460,6 +468,7 @@ class BinaryFileActionResult {
       case 13: return 'Failed to open file';
       case 14: return 'Path too long';
       case 15: return 'BLE adapter not found';
+      case 16: return 'File too large';
       default: return 'Error $code';
     }
   }
@@ -1072,6 +1081,86 @@ class BinaryMessageParser {
             },
           };
 
+        // ── ProtoPirate notifications ──────────────────────────
+
+        case BinaryMessageType.ppDecodeResult:
+          // [0xB5][nameLen:1][name...][data:8][data2:8][serial:4][btn:1][cnt:4][bits:1][enc:1][crc:1]
+          return _parsePPDecodeResult(data);
+
+        case BinaryMessageType.ppHistoryEntry:
+          // [0xB6][index:1][ts:4][nameLen:1][name...][data fields...]
+          return _parsePPHistoryEntry(data);
+
+        case BinaryMessageType.ppStatus:
+          // [0xB7][state:1][module:1][freqx100:2LE][signalCount:4LE]
+          if (data.length < 5) return null;
+          {
+            int ppState = data[1];
+            int ppModule = data[2];
+            int freqRaw = data[3] | (data[4] << 8);
+            // signalCount added in FW v2.x — backward compatible
+            int signalCount = 0;
+            if (data.length >= 9) {
+              signalCount = data[5] |
+                  (data[6] << 8) |
+                  (data[7] << 16) |
+                  (data[8] << 24);
+            }
+            return {
+              'type': 'PPStatus',
+              'data': {
+                'state': ppState,
+                'module': ppModule == 0xFF ? -1 : ppModule,
+                'frequency': freqRaw / 100.0,
+                'signalCount': signalCount,
+              },
+            };
+          }
+
+        case BinaryMessageType.ppHistoryCount:
+          // [0xB8][count:2LE]
+          if (data.length < 3) return null;
+          return {
+            'type': 'PPHistoryCount',
+            'data': {
+              'count': data[1] | (data[2] << 8),
+            },
+          };
+
+        case BinaryMessageType.ppFileList:
+          // [0xB9][count:1][{pathLen:1, path:pathLen, size:4LE}...]
+          return _parsePPFileList(data);
+
+        case BinaryMessageType.ppTxStatus:
+          // [0xBA][state:1][errCode:1]
+          if (data.length < 3) return null;
+          return {
+            'type': 'PPTxStatus',
+            'data': {
+              'state': data[1],   // 0=idle, 1=transmitting, 2=done, 3=error
+              'errorCode': data[2],
+            },
+          };
+
+        case BinaryMessageType.ppSaveResult:
+          // [0xBB][success:1][pathLen:1][path...]
+          if (data.length < 3) return null;
+          {
+            bool success = data[1] != 0;
+            int pathLen = data[2];
+            String path = '';
+            if (pathLen > 0 && data.length >= 3 + pathLen) {
+              path = String.fromCharCodes(data.sublist(3, 3 + pathLen));
+            }
+            return {
+              'type': 'PPSaveResult',
+              'data': {
+                'success': success,
+                'path': path,
+              },
+            };
+          }
+
         // ── NRF24 notifications ────────────────────────────────
 
         case BinaryMessageType.nrfDeviceFound:
@@ -1292,5 +1381,118 @@ class BinaryMessageParser {
       return null;
     }
   }
-}
 
+  // ── ProtoPirate message parsers ────────────────────────────
+
+  /// Parse PP decode result: [0xB5][nameLen:1][name...][data:8][data2:8][serial:4][btn:1][cnt:4][bits:1][enc:1][crc:1]
+  static Map<String, dynamic>? _parsePPDecodeResult(Uint8List data) {
+    if (data.length < 3) return null;
+    int offset = 1; // Skip 0xB5
+    int nameLen = data[offset++];
+    if (data.length < offset + nameLen + 27) return null; // Need full payload
+
+    String name = String.fromCharCodes(data.sublist(offset, offset + nameLen));
+    offset += nameLen;
+
+    final fields = _parsePPDataFields(data, offset);
+    if (fields == null) return null;
+
+    fields['protocolName'] = name;
+    return {'type': 'PPDecodeResult', 'data': fields};
+  }
+
+  /// Parse PP history entry: [0xB6][index:1][ts:4LE][nameLen:1][name...][data fields...]
+  static Map<String, dynamic>? _parsePPHistoryEntry(Uint8List data) {
+    if (data.length < 8) return null;
+    int offset = 1; // Skip 0xB6
+    int index = data[offset++];
+    int ts = data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24);
+    offset += 4;
+    int nameLen = data[offset++];
+    if (data.length < offset + nameLen + 27) return null;
+
+    String name = String.fromCharCodes(data.sublist(offset, offset + nameLen));
+    offset += nameLen;
+
+    final fields = _parsePPDataFields(data, offset);
+    if (fields == null) return null;
+
+    fields['protocolName'] = name;
+    fields['historyIndex'] = index;
+    fields['timestampMs'] = ts;
+    return {'type': 'PPHistoryEntry', 'data': fields};
+  }
+
+  /// Parse common PP data fields: [data:8][data2:8][serial:4][btn:1][cnt:4][bits:1][enc:1][crc:1] = 28 bytes
+  static Map<String, dynamic>? _parsePPDataFields(Uint8List data, int offset) {
+    if (data.length < offset + 28) return null;
+
+    // data: 8 bytes LE (uint64)
+    int d = 0;
+    for (int i = 7; i >= 0; i--) {
+      d = (d << 8) | data[offset + i];
+    }
+    offset += 8;
+
+    // data2: 8 bytes LE (uint64)
+    int d2 = 0;
+    for (int i = 7; i >= 0; i--) {
+      d2 = (d2 << 8) | data[offset + i];
+    }
+    offset += 8;
+
+    // serial: 4 bytes LE
+    int serial = data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24);
+    offset += 4;
+
+    int button = data[offset++];
+
+    int counter = data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24);
+    offset += 4;
+
+    int dataBits = data[offset++];
+    bool encrypted = data[offset++] != 0;
+    bool crcValid = data[offset++] != 0;
+
+    return {
+      'data': d,
+      'data2': d2,
+      'serial': serial,
+      'button': button,
+      'counter': counter,
+      'dataBits': dataBits,
+      'encrypted': encrypted,
+      'crcValid': crcValid,
+    };
+  }
+
+  /// Parse PP file list: [0xB9][count:1][{pathLen:1, path:pathLen, size:4LE}...]
+  static Map<String, dynamic>? _parsePPFileList(Uint8List data) {
+    if (data.length < 2) return null;
+    int count = data[1];
+    List<Map<String, dynamic>> files = [];
+    int offset = 2;
+
+    for (int i = 0; i < count && offset < data.length; i++) {
+      if (offset >= data.length) break;
+      int pathLen = data[offset++];
+      if (offset + pathLen + 4 > data.length) break;
+      String path = String.fromCharCodes(data.sublist(offset, offset + pathLen));
+      offset += pathLen;
+      int size = data[offset] |
+          (data[offset + 1] << 8) |
+          (data[offset + 2] << 16) |
+          (data[offset + 3] << 24);
+      offset += 4;
+      files.add({'path': path, 'size': size});
+    }
+
+    return {
+      'type': 'PPFileList',
+      'data': {
+        'count': count,
+        'files': files,
+      },
+    };
+  }
+}

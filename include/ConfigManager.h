@@ -43,26 +43,28 @@ class ConfigManager
 {
   public:
     /// In-memory copy of persistent settings (loaded at boot).
+    // Default settings — positional aggregate init (GCC 8.4 lacks C++20 designated initializers).
+    // Field order must match DeviceSettings struct declaration above.
     static inline DeviceSettings settings = {
-        .serialBaudRate = 115200,
-        .scannerRssi    = -80,
-        .bruterPower    = 7,
-        .bruterDelay    = 10,
-        .bruterRepeats  = 4,
-        .radioPowerMod1 = 10,
-        .radioPowerMod2 = 10,
-        .button1Action  = 0,
-        .button2Action  = 0,
-        .button1SignalPathType = 1,
-        .button2SignalPathType = 1,
-        .button1SignalPath = "",
-        .button2SignalPath = "",
-        .nrfPaLevel     = 3,   // MAX by default
-        .nrfDataRate    = 0,   // 1MBPS default
-        .nrfChannel     = 76,  // Default channel 76
-        .nrfAutoRetransmit = 5,
-        .cpuTempOffsetDeciC = -360,
-        .deviceName     = "EvilCrow_RF2",
+        115200,     // serialBaudRate
+        -80,        // scannerRssi
+        7,          // bruterPower
+        10,         // bruterDelay
+        4,          // bruterRepeats
+        10,         // radioPowerMod1
+        10,         // radioPowerMod2
+        0,          // button1Action
+        0,          // button2Action
+        1,          // button1SignalPathType
+        1,          // button2SignalPathType
+        "",          // button1SignalPath
+        "",          // button2SignalPath
+        3,          // nrfPaLevel (MAX)
+        0,          // nrfDataRate (1MBPS)
+        76,         // nrfChannel
+        5,          // nrfAutoRetransmit
+        -360,       // cpuTempOffsetDeciC
+        "EvilCrow_RF2"  // deviceName
     };
 
     /// Load settings from /config.txt into the in-memory struct.
@@ -249,7 +251,9 @@ class ConfigManager
     static void resetConfigToDefault()
     {
         LittleFS.remove("/config.txt");
-        settings = {
+        // Re-initialize using a temporary aggregate (GCC 8.4 cannot assign
+        // a brace-enclosed initializer list to a struct variable directly).
+        DeviceSettings defaults = {
             115200, -80, 7, 10, 4,
             10, 10,
             0, 0,
@@ -259,6 +263,7 @@ class ConfigManager
             -200,
             "EvilCrow_RF2"
         };
+        settings = defaults;
         saveSettings();
     }
 

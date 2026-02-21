@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/file_item.dart';
 import '../models/detected_signal.dart';
 import '../models/directory_tree_node.dart';
+import '../models/protopirate_result.dart';
 import 'firmware_protocol.dart';
 import '../services/signal_processing/signal_data.dart';
 import '../services/signal_generators/signal_generator_factory.dart';
@@ -672,6 +673,9 @@ class BleProvider extends ChangeNotifier {
 
     // Reset bruter state
     _resetBruterState();
+
+    // Reset ProtoPirate state
+    _resetPPState();
     
     notifyListeners();
     
@@ -1388,8 +1392,8 @@ class BleProvider extends ChangeNotifier {
   final Map<int, Set<int>> _receivedChunks = {}; // chunkId -> set of received chunk numbers
   final Map<int, DateTime> _chunkStartTimes = {}; // chunkId -> timestamp when chunk buffer was created
   final Map<int, DateTime> _chunkLastReceived = {}; // chunkId -> timestamp when last chunk was received
-  static const Duration _chunkTimeout = Duration(seconds: 3); // Timeout for stale chunk buffers
-  static const Duration _chunkStaleTimeout = Duration(milliseconds: 500); // Timeout if chunks arrive out of order
+  static const Duration _chunkTimeout = Duration(seconds: 10); // Overall timeout for chunked messages
+  static const Duration _chunkStaleTimeout = Duration(seconds: 2); // Timeout if chunks stop arriving
   
   // Callback for JSON responses
   Function(dynamic jsonData)? _onJsonReceived;
@@ -1536,58 +1540,16 @@ class BleProvider extends ChangeNotifier {
       // Exception: system messages and file list messages should be processed even with active chunk buffers
       // File list messages can arrive as separate single packets during streaming
       if (_chunkData.isNotEmpty && !isSystemMessage && !isFileListMessage) {
-        // Clean up stale chunk buffers first - they might be blocking new messages
+        // Only clean truly stale buffers (based on _chunkTimeout/_chunkStaleTimeout).
+        // Do NOT aggressively clear buffers just because a single packet arrived between chunks.
+        // That can break in-progress multi-chunk transfers (e.g., file content streaming).
         _cleanupStaleChunkBuffers();
-        
-        // Double-check: if buffers exist but are very old (>300ms), they're probably stuck
-        // Also clean ALL buffers missing chunk 1 (chunk 1 is required for completion)
-        final now = DateTime.now();
-        final stuckBuffers = <int>[];
-        for (var chunkId in _chunkData.keys) {
-          bool shouldClean = false;
-          
-          if (_chunkStartTimes.containsKey(chunkId)) {
-            final age = now.difference(_chunkStartTimes[chunkId]!);
-            // Clean if buffer is old
-            if (age > const Duration(milliseconds: 300)) {
-              shouldClean = true;
-            }
-          }
-          
-          // CRITICAL: Always clean buffers missing chunk 1 (required for multi-chunk messages)
-          // If chunk 1 is missing, the message can never be completed
-          if (!shouldClean && _receivedChunks.containsKey(chunkId)) {
-            if (!_receivedChunks[chunkId]!.contains(1)) {
-              final expected = _expectedChunks[chunkId] ?? 0;
-              if (expected > 1) { // Only for multi-chunk messages
-                // Clean immediately - chunk 1 is required and if it hasn't arrived yet,
-                // it's likely lost (especially if we're receiving other messages)
-                shouldClean = true;
-              }
-            }
-          }
-          
-          if (shouldClean) {
-            stuckBuffers.add(chunkId);
-          }
-        }
-        
-        if (stuckBuffers.isNotEmpty) {
-          print('Cleaning up ${stuckBuffers.length} stuck chunk buffers (old or missing chunk 1): $stuckBuffers');
-          for (var chunkId in stuckBuffers) {
-            _chunkData.remove(chunkId);
-            _expectedChunks.remove(chunkId);
-            _receivedChunks.remove(chunkId);
-            _chunkStartTimes.remove(chunkId);
-            _chunkLastReceived.remove(chunkId);
-          }
-        }
-        
-        // If buffers are still active after aggressive cleanup, ignore this single packet
-        // Exception: file list messages should be processed even with active chunk buffers
-        // because they arrive as separate single packets during streaming
+
+        // If a non-system single packet arrives while a chunked transfer is active,
+        // ignore it to avoid mixing protocols and corrupting the chunked assembly.
         if (_chunkData.isNotEmpty && !isFileListMessage) {
-          print('WARNING: Received single packet (totalChunks=1) but chunk buffers are active (${_chunkData.keys.toList()}), ignoring to avoid processing incomplete data');
+          print(
+              'INFO: Ignoring single packet while chunk buffers are active (${_chunkData.keys.toList()})');
           return;
         }
       }
@@ -1621,24 +1583,11 @@ class BleProvider extends ChangeNotifier {
       _chunkLastReceived[chunkId] = now;
     }
     
-    // Check if chunk arrives out of order (e.g., chunk 2/2 before chunk 1/2)
-    // If we're missing chunk 1 and this is chunk 2+, check if we should wait or cleanup
+    // Allow out-of-order delivery: buffer chunks even if chunk 1 isn't received yet.
+    // Some BLE stacks can deliver notifications out-of-order under load.
     if (chunkNumber > 1 && !_receivedChunks[chunkId]!.contains(1)) {
       final bufferAge = now.difference(_chunkStartTimes[chunkId]!);
-      // If buffer is older than 100ms and we're missing chunk 1, it's likely lost
-      // Reduced from 200ms to be more aggressive - BLE chunks should arrive within 100ms
-      if (bufferAge > const Duration(milliseconds: 100)) {
-        print('WARNING: Chunk $chunkNumber/$totalChunks arrived for chunkId $chunkId but chunk 1 is missing (buffer age: ${bufferAge.inMilliseconds}ms), cleaning up stale buffer');
-        _chunkData.remove(chunkId);
-        _expectedChunks.remove(chunkId);
-        _receivedChunks.remove(chunkId);
-        _chunkStartTimes.remove(chunkId);
-        _chunkLastReceived.remove(chunkId);
-        // Don't process this chunk - it's incomplete without chunk 1
-        return;
-      } else {
-        print('INFO: Chunk $chunkNumber/$totalChunks arrived for chunkId $chunkId but chunk 1 is not yet received (may arrive out of order, age: ${bufferAge.inMilliseconds}ms)');
-      }
+      print('INFO: Chunk $chunkNumber/$totalChunks arrived for chunkId $chunkId before chunk 1 (age: ${bufferAge.inMilliseconds}ms)');
     }
     
     // Handle duplicate chunks: overwrite data (safe since data is identical)
@@ -1873,6 +1822,28 @@ class BleProvider extends ChangeNotifier {
           break;
         case 'BruterStateAvail':
           _handleBruterStateAvail(data['data']);
+          break;
+        // ── ProtoPirate notifications ──
+        case 'PPDecodeResult':
+          _handlePPDecodeResult(data['data']);
+          break;
+        case 'PPHistoryEntry':
+          _handlePPHistoryEntry(data['data']);
+          break;
+        case 'PPStatus':
+          _handlePPStatus(data['data']);
+          break;
+        case 'PPHistoryCount':
+          _handlePPHistoryCount(data['data']);
+          break;
+        case 'PPFileList':
+          _handlePPFileList(data['data']);
+          break;
+        case 'PPTxStatus':
+          _handlePPTxStatus(data['data']);
+          break;
+        case 'PPSaveResult':
+          _handlePPSaveResult(data['data']);
           break;
         case 'SettingsSync':
           _handleSettingsSync(data['data']);
@@ -3525,6 +3496,289 @@ class BleProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ═════════════════════════════════════════════════════════════
+  //  ProtoPirate — Automotive key fob protocol decoder
+  // ═════════════════════════════════════════════════════════════
+
+  /// Whether PP decode is currently running
+  bool _ppDecoding = false;
+  bool get ppDecoding => _ppDecoding;
+
+  /// Active CC1101 module for PP (-1 = none)
+  int _ppModule = -1;
+  int get ppModule => _ppModule;
+
+  /// Active PP frequency (MHz)
+  double _ppFrequency = 433.92;
+  double get ppFrequency => _ppFrequency;
+
+  /// Decoded results (live feed, max 50 entries)
+  final List<ProtoPirateResult> _ppResults = [];
+  List<ProtoPirateResult> get ppResults => List.unmodifiable(_ppResults);
+
+  /// History count (from device)
+  int _ppHistoryCount = 0;
+  int get ppHistoryCount => _ppHistoryCount;
+
+  /// Number of RF signals analyzed in the current decode session
+  int _ppSignalCount = 0;
+  int get ppSignalCount => _ppSignalCount;
+
+  /// TX emulation state: 0=idle, 1=transmitting, 2=done, 3=error
+  int _ppTxState = 0;
+  int get ppTxState => _ppTxState;
+
+  /// Last TX error code (0 = no error)
+  int _ppTxErrorCode = 0;
+  int get ppTxErrorCode => _ppTxErrorCode;
+
+  /// File list from device (SD card .sub files)
+  List<Map<String, dynamic>> _ppFileList = [];
+  List<Map<String, dynamic>> get ppFileList => List.unmodifiable(_ppFileList);
+
+  /// Whether the file list response has been received (to distinguish loading vs empty)
+  bool _ppFileListReceived = false;
+  bool get ppFileListReceived => _ppFileListReceived;
+
+  /// Last save result path
+  String _ppLastSavePath = '';
+  String get ppLastSavePath => _ppLastSavePath;
+
+  /// Whether the last save succeeded
+  bool _ppSaveSuccess = false;
+  bool get ppSaveSuccess => _ppSaveSuccess;
+
+  /// Start ProtoPirate decoding
+  Future<void> ppStartDecode({int module = 0, double frequency = 433.92}) async {
+    if (!isConnected || txCharacteristic == null) {
+      throw Exception('Not connected');
+    }
+    _log('command', 'PP StartDecode: module=$module freq=$frequency');
+    final cmd = FirmwareBinaryProtocol.createPPStartDecodeCommand(module, frequency);
+    await sendBinaryCommand(cmd);
+    _ppDecoding = true;
+    _ppModule = module;
+    _ppFrequency = frequency;
+    notifyListeners();
+  }
+
+  /// Stop ProtoPirate decoding
+  Future<void> ppStopDecode() async {
+    if (!isConnected || txCharacteristic == null) {
+      throw Exception('Not connected');
+    }
+    _log('command', 'PP StopDecode');
+    final cmd = FirmwareBinaryProtocol.createPPStopDecodeCommand();
+    await sendBinaryCommand(cmd);
+    _ppDecoding = false;
+    _ppModule = -1;
+    notifyListeners();
+  }
+
+  /// Request PP history count
+  Future<void> ppGetHistoryCount() async {
+    if (!isConnected || txCharacteristic == null) return;
+    final cmd = FirmwareBinaryProtocol.createPPGetHistoryCountCommand();
+    await sendBinaryCommand(cmd);
+  }
+
+  /// Request a specific PP history entry
+  Future<void> ppGetHistoryEntry(int index) async {
+    if (!isConnected || txCharacteristic == null) return;
+    final cmd = FirmwareBinaryProtocol.createPPGetHistoryEntryCommand(index);
+    await sendBinaryCommand(cmd);
+  }
+
+  /// Clear PP history on device and locally
+  Future<void> ppClearHistory() async {
+    if (!isConnected || txCharacteristic == null) return;
+    _log('command', 'PP ClearHistory');
+    final cmd = FirmwareBinaryProtocol.createPPClearHistoryCommand();
+    await sendBinaryCommand(cmd);
+    _ppResults.clear();
+    _ppHistoryCount = 0;
+    notifyListeners();
+  }
+
+  /// Request PP status
+  Future<void> ppGetStatus() async {
+    if (!isConnected || txCharacteristic == null) return;
+    final cmd = FirmwareBinaryProtocol.createPPGetStatusCommand();
+    await sendBinaryCommand(cmd);
+  }
+
+  /// Clear local PP results list
+  void ppClearResults() {
+    _ppResults.clear();
+    notifyListeners();
+  }
+
+  /// Load a .sub file on the SD card and feed it to PP decoders (diagnostic)
+  Future<void> ppLoadSubFile(String filePath) async {
+    if (!isConnected || txCharacteristic == null) {
+      throw Exception('Not connected');
+    }
+    _log('command', 'PP LoadSubFile: $filePath');
+    final cmd = FirmwareBinaryProtocol.createPPLoadSubFileCommand(filePath);
+    await sendBinaryCommand(cmd);
+  }
+
+  /// List .sub files on SD card for file browser
+  Future<void> ppListSubFiles([String path = '/']) async {
+    if (!isConnected || txCharacteristic == null) {
+      throw Exception('Not connected');
+    }
+    _log('command', 'PP ListSubFiles: $path');
+    _ppFileList = [];
+    _ppFileListReceived = false;
+    final cmd = FirmwareBinaryProtocol.createPPListSubFilesCommand(path);
+    await sendBinaryCommand(cmd);
+  }
+
+  /// List saved ProtoPirate captures (/DATA/PROTOPIRATE/)
+  Future<void> ppListSaved() async {
+    if (!isConnected || txCharacteristic == null) {
+      throw Exception('Not connected');
+    }
+    _log('command', 'PP ListSaved');
+    _ppFileList = [];
+    _ppFileListReceived = false;
+    final cmd = FirmwareBinaryProtocol.createPPListSavedCommand();
+    await sendBinaryCommand(cmd);
+  }
+
+  /// Emulate (TX) a decoded ProtoPirate signal
+  Future<void> ppEmulate(ProtoPirateResult result,
+      {int module = 0, int repeat = 3}) async {
+    if (!isConnected || txCharacteristic == null) {
+      throw Exception('Not connected');
+    }
+    _ppTxState = 0;
+    _ppTxErrorCode = 0;
+    _log('command',
+        'PP Emulate: ${result.protocolName} module=$module repeat=$repeat');
+    final cmd = FirmwareBinaryProtocol.createPPEmulateCommand(
+      module: module,
+      repeat: repeat,
+      protocolName: result.protocolName,
+      data: result.data,
+      data2: result.data2,
+      serial: result.serial,
+      button: result.button,
+      counter: result.counter,
+      dataBits: result.dataBits,
+      frequencyMhz: result.frequency > 0 ? result.frequency : _ppFrequency,
+    );
+    await sendBinaryCommand(cmd);
+  }
+
+  /// Save a decoded capture to SD card (/DATA/PROTOPIRATE/)
+  Future<void> ppSaveCapture(ProtoPirateResult result) async {
+    if (!isConnected || txCharacteristic == null) {
+      throw Exception('Not connected');
+    }
+    _log('command', 'PP SaveCapture: ${result.protocolName}');
+    final cmd = FirmwareBinaryProtocol.createPPSaveCaptureCommand(
+      protocolName: result.protocolName,
+      data: result.data,
+      data2: result.data2,
+      serial: result.serial,
+      button: result.button,
+      counter: result.counter,
+      dataBits: result.dataBits,
+      frequencyMhz: result.frequency > 0 ? result.frequency : _ppFrequency,
+    );
+    await sendBinaryCommand(cmd);
+  }
+
+  void _handlePPDecodeResult(Map<String, dynamic> data) {
+    // Inject current frequency if not present in data
+    if (!data.containsKey('frequency')) {
+      data['frequency'] = _ppFrequency;
+    }
+    final result = ProtoPirateResult.fromMap(data);
+    _ppResults.insert(0, result); // Newest first
+    if (_ppResults.length > 50) _ppResults.removeLast();
+    _log('info', 'PP decoded: ${result.summary}');
+    notifyListeners();
+  }
+
+  void _handlePPHistoryEntry(Map<String, dynamic> data) {
+    final result = ProtoPirateResult.fromMap(data);
+    // Deduplicate: skip if same protocol + serial + counter already present
+    final isDup = _ppResults.any((r) =>
+        r.protocolName == result.protocolName &&
+        r.serial == result.serial &&
+        r.counter == result.counter);
+    if (isDup) {
+      _log('debug', 'PP history duplicate skipped: ${result.summary}');
+      return;
+    }
+    _ppResults.insert(0, result);
+    if (_ppResults.length > 50) _ppResults.removeLast();
+    _log('info', 'PP history entry: ${result.summary}');
+    notifyListeners();
+  }
+
+  void _handlePPStatus(Map<String, dynamic> data) {
+    int state = data['state'] ?? 0;
+    _ppDecoding = state == 1;
+    _ppModule = data['module'] ?? -1;
+    _ppFrequency = (data['frequency'] as num?)?.toDouble() ?? 433.92;
+    _ppSignalCount = data['signalCount'] ?? 0;
+    _log('debug', 'PP status: decoding=$_ppDecoding module=$_ppModule freq=$_ppFrequency signals=$_ppSignalCount');
+    notifyListeners();
+  }
+
+  void _handlePPHistoryCount(Map<String, dynamic> data) {
+    _ppHistoryCount = data['count'] ?? 0;
+    _log('debug', 'PP history count: $_ppHistoryCount');
+    notifyListeners();
+  }
+
+  /// Handle file list notification (0xB9) — SD card file browser results
+  void _handlePPFileList(Map<String, dynamic> data) {
+    final files = data['files'] as List<dynamic>? ?? [];
+    _ppFileList = files.cast<Map<String, dynamic>>();
+    _ppFileListReceived = true;
+    _log('info', 'PP file list received: ${_ppFileList.length} entries');
+    notifyListeners();
+  }
+
+  /// Handle TX status notification (0xBA)
+  void _handlePPTxStatus(Map<String, dynamic> data) {
+    _ppTxState = data['state'] ?? 0;
+    _ppTxErrorCode = data['errorCode'] ?? 0;
+    final stateNames = ['idle', 'transmitting', 'done', 'error'];
+    final stateName =
+        _ppTxState < stateNames.length ? stateNames[_ppTxState] : 'unknown';
+    _log('info', 'PP TX status: $stateName (err=$_ppTxErrorCode)');
+    notifyListeners();
+  }
+
+  /// Handle save result notification (0xBB)
+  void _handlePPSaveResult(Map<String, dynamic> data) {
+    _ppSaveSuccess = data['success'] ?? false;
+    _ppLastSavePath = data['path'] ?? '';
+    _log('info', 'PP save result: ${_ppSaveSuccess ? "OK" : "FAIL"} path=$_ppLastSavePath');
+    notifyListeners();
+  }
+
+  void _resetPPState() {
+    _ppDecoding = false;
+    _ppModule = -1;
+    _ppFrequency = 433.92;
+    _ppResults.clear();
+    _ppHistoryCount = 0;
+    _ppSignalCount = 0;
+    _ppTxState = 0;
+    _ppTxErrorCode = 0;
+    _ppFileList = [];
+    _ppFileListReceived = false;
+    _ppLastSavePath = '';
+    _ppSaveSuccess = false;
+  }
+
   /// Handle settings sync from firmware (0xC0).
   /// Updates local settings to match the device state.
   void _handleSettingsSync(Map<String, dynamic> data) {
@@ -3943,9 +4197,26 @@ class BleProvider extends ChangeNotifier {
       int effectivePathType = pathType ?? currentPathType;
       String fileName = filePath;
       
-      // Extract filename if full path provided
-      if (filePath.startsWith('/DATA/')) {
-        fileName = filePath.split('/').last;
+      // For pathType 0-3 (DATA sub-dirs), strip the "/DATA/<DIR>/" prefix
+      // since buildFullPath on firmware will re-add it.
+      // For pathType 4/5 (root-based), send the relative path as-is
+      // but remove a leading "/" to avoid double-slash on firmware side.
+      if (effectivePathType >= 0 && effectivePathType <= 3) {
+        if (filePath.startsWith('/DATA/')) {
+          // Strip /DATA/<DIR>/ prefix for legacy path types
+          final parts = filePath.split('/');
+          // /DATA/RECORDS/subfolder/file.sub → subfolder/file.sub
+          if (parts.length > 3) {
+            fileName = parts.sublist(3).join('/');
+          } else if (parts.length == 3) {
+            fileName = parts.last;
+          }
+        }
+      } else {
+        // pathType 4/5: strip leading "/" if present
+        if (fileName.startsWith('/')) {
+          fileName = fileName.substring(1);
+        }
       }
       
       _log('command', 'Deleting file: $fileName (pathType: $effectivePathType)');

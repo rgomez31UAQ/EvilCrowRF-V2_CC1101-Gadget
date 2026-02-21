@@ -2164,7 +2164,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// and closes automatically when the firmware result arrives.
   void _showSDFormatProgressDialog(BuildContext context) {
     bool closed = false;
-    bool hasReceivedResponse = false;
+    bool timeoutStarted = false;
     
     showDialog(
       context: context,
@@ -2173,14 +2173,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         canPop: false,
         child: Consumer<BleProvider>(
           builder: (context, ble, _) {
-            // Mark that we've started receiving progress updates
-            if (ble.isFormattingSD && ble.sdFormatProgress.isNotEmpty) {
-              hasReceivedResponse = true;
-            }
-            
-            // Only close if we've received at least one progress update and formatting is done
-            // This prevents premature closure if firmware responds instantly with error
-            if (!ble.isFormattingSD && !closed && hasReceivedResponse) {
+            // Close as soon as formatting is done, regardless of whether
+            // intermediate progress messages were received (BLE can drop them).
+            if (!ble.isFormattingSD && !closed) {
               closed = true;
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 if (ctx.mounted) Navigator.of(ctx).pop();
@@ -2200,20 +2195,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
               });
             }
             
-            // Show warning if formatting takes too long without progress
-            if (ble.isFormattingSD && !hasReceivedResponse) {
-              // Start a timeout to close dialog if no response after 10 seconds
-              Future.delayed(const Duration(seconds: 10), () {
-                if (ctx.mounted && !closed && !hasReceivedResponse) {
+            // Safety timeout — only start ONCE
+            if (ble.isFormattingSD && !timeoutStarted) {
+              timeoutStarted = true;
+              Future.delayed(const Duration(seconds: 30), () {
+                if (ctx.mounted && !closed) {
                   closed = true;
                   Navigator.of(ctx).pop();
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Format timeout: No response from device.'),
-                      backgroundColor: AppColors.error,
-                      duration: Duration(seconds: 4),
-                    ),
-                  );
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Format timeout: No response from device.'),
+                        backgroundColor: AppColors.error,
+                        duration: Duration(seconds: 4),
+                      ),
+                    );
+                  }
                 }
               });
             }
@@ -2814,6 +2811,12 @@ class _AboutPopupState extends State<_AboutPopup>
       description: 'Original Bruter & DeBruijn sequence features',
       githubUrl: 'https://github.com/realdaveblanch/EvilCrowRf-Bruter',
       nameColor: Color(0xFFFFD54F),
+    ),
+    _ContributorCredit(
+      name: 'ProtoPirate',
+      description: 'Automotive key fob protocol research & reference implementation',
+      githubUrl: 'https://protopirate.net/ProtoPirate/ProtoPirate',
+      nameColor: Color(0xFF64B5F6),
     ),
   ];
 

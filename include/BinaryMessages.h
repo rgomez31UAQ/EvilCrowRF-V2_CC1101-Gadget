@@ -80,6 +80,15 @@ enum BinaryMessageType : uint8_t {
 
     // nRF24 module status (sent on GetState)
     MSG_NRF_STATUS    = 0xCA, // [present:1][initialized:1][activeState:1]
+
+    // ProtoPirate (automotive key fob decoder)
+    MSG_PP_DECODE_RESULT = 0xB5,  // Decoded signal: [nameLen:1][name...][data:8][data2:8][serial:4][btn:1][cnt:4][bits:1][enc:1][crc:1]
+    MSG_PP_HISTORY_ENTRY = 0xB6,  // History entry: [idx:1][ts:4][nameLen:1][name...][data fields...]
+    MSG_PP_STATUS        = 0xB7,  // Status: [state:1][module:1][freqx100:2LE]
+    MSG_PP_HISTORY_COUNT = 0xB8,  // History count: [count:2LE]
+    MSG_PP_FILE_LIST     = 0xB9,  // File list: [count:1][{pathLen:1, path, size:4LE}...]
+    MSG_PP_TX_STATUS     = 0xBA,  // TX status: [state:1] 0=idle,1=tx,2=done,3=error [errCode:1]
+    MSG_PP_SAVE_RESULT   = 0xBB,  // Save result: [success:1][pathLen:1][path...]
 };
 
 // Mode switch notification (4 bytes)

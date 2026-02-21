@@ -3680,6 +3680,174 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **' ⚡ Charging'**
   String get chargingIndicator;
+
+  /// No description provided for @protoPirate.
+  ///
+  /// In en, this message translates to:
+  /// **'ProtoPirate'**
+  String get protoPirate;
+
+  /// No description provided for @ppStartDecode.
+  ///
+  /// In en, this message translates to:
+  /// **'Start Decode'**
+  String get ppStartDecode;
+
+  /// No description provided for @ppStopDecode.
+  ///
+  /// In en, this message translates to:
+  /// **'Stop Decode'**
+  String get ppStopDecode;
+
+  /// No description provided for @ppDecoding.
+  ///
+  /// In en, this message translates to:
+  /// **'Decoding…'**
+  String get ppDecoding;
+
+  /// No description provided for @ppIdle.
+  ///
+  /// In en, this message translates to:
+  /// **'Idle'**
+  String get ppIdle;
+
+  /// No description provided for @ppFrequency.
+  ///
+  /// In en, this message translates to:
+  /// **'Frequency'**
+  String get ppFrequency;
+
+  /// No description provided for @ppModule.
+  ///
+  /// In en, this message translates to:
+  /// **'Module'**
+  String get ppModule;
+
+  /// No description provided for @ppHistory.
+  ///
+  /// In en, this message translates to:
+  /// **'History'**
+  String get ppHistory;
+
+  /// No description provided for @ppClearHistory.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear History'**
+  String get ppClearHistory;
+
+  /// No description provided for @ppClearResults.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear Results'**
+  String get ppClearResults;
+
+  /// No description provided for @ppNoResults.
+  ///
+  /// In en, this message translates to:
+  /// **'No decoded signals yet'**
+  String get ppNoResults;
+
+  /// No description provided for @ppNoResultsHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Start decoding to capture automotive key fob signals'**
+  String get ppNoResultsHint;
+
+  /// No description provided for @ppListeningHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Press your key fob near the antenna...'**
+  String get ppListeningHint;
+
+  /// No description provided for @ppSignalsAnalyzed.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} signals analyzed'**
+  String ppSignalsAnalyzed(int count);
+
+  /// No description provided for @ppProtocol.
+  ///
+  /// In en, this message translates to:
+  /// **'Protocol'**
+  String get ppProtocol;
+
+  /// No description provided for @ppSerial.
+  ///
+  /// In en, this message translates to:
+  /// **'Serial'**
+  String get ppSerial;
+
+  /// No description provided for @ppButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Button'**
+  String get ppButton;
+
+  /// No description provided for @ppCounter.
+  ///
+  /// In en, this message translates to:
+  /// **'Counter'**
+  String get ppCounter;
+
+  /// No description provided for @ppData.
+  ///
+  /// In en, this message translates to:
+  /// **'Data'**
+  String get ppData;
+
+  /// No description provided for @ppEncrypted.
+  ///
+  /// In en, this message translates to:
+  /// **'ENC'**
+  String get ppEncrypted;
+
+  /// No description provided for @ppCrcValid.
+  ///
+  /// In en, this message translates to:
+  /// **'CRC ✓'**
+  String get ppCrcValid;
+
+  /// No description provided for @ppCrcInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'CRC ✗'**
+  String get ppCrcInvalid;
+
+  /// No description provided for @ppResultCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} signals decoded'**
+  String ppResultCount(int count);
+
+  /// No description provided for @ppDecodingOn.
+  ///
+  /// In en, this message translates to:
+  /// **'Decoding on module {module} at {freq} MHz'**
+  String ppDecodingOn(int module, String freq);
+
+  /// No description provided for @ppStarted.
+  ///
+  /// In en, this message translates to:
+  /// **'ProtoPirate started on module {module}'**
+  String ppStarted(int module);
+
+  /// No description provided for @ppStopped.
+  ///
+  /// In en, this message translates to:
+  /// **'ProtoPirate stopped'**
+  String get ppStopped;
+
+  /// No description provided for @ppHistoryCleared.
+  ///
+  /// In en, this message translates to:
+  /// **'History cleared'**
+  String get ppHistoryCleared;
+
+  /// No description provided for @ppError.
+  ///
+  /// In en, this message translates to:
+  /// **'ProtoPirate error: {error}'**
+  String ppError(String error);
 }
 
 class _AppLocalizationsDelegate
