@@ -8,8 +8,8 @@
 // The app will compare these values for FW update matching.
 #define FIRMWARE_VERSION_MAJOR 1
 #define FIRMWARE_VERSION_MINOR 1
-#define FIRMWARE_VERSION_PATCH 0
-#define FIRMWARE_VERSION_STRING "1.1.0"
+#define FIRMWARE_VERSION_PATCH 2
+#define FIRMWARE_VERSION_STRING "1.1.2"
 
 #define CC1101_NUM_MODULES 2
 
@@ -62,6 +62,9 @@
 
 // OTA firmware update
 #define OTA_MODULE_ENABLED 1
+
+// ProtoPirate (automotive key fob protocol decoder)
+#define PROTOPIRATE_MODULE_ENABLED 1
 
 // Battery monitoring via ADC
 // GPIO 36 (VP) connected to battery through voltage divider

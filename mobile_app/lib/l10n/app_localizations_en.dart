@@ -2098,4 +2098,99 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get chargingIndicator => ' ⚡ Charging';
+
+  @override
+  String get protoPirate => 'ProtoPirate';
+
+  @override
+  String get ppStartDecode => 'Start Decode';
+
+  @override
+  String get ppStopDecode => 'Stop Decode';
+
+  @override
+  String get ppDecoding => 'Decoding…';
+
+  @override
+  String get ppIdle => 'Idle';
+
+  @override
+  String get ppFrequency => 'Frequency';
+
+  @override
+  String get ppModule => 'Module';
+
+  @override
+  String get ppHistory => 'History';
+
+  @override
+  String get ppClearHistory => 'Clear History';
+
+  @override
+  String get ppClearResults => 'Clear Results';
+
+  @override
+  String get ppNoResults => 'No decoded signals yet';
+
+  @override
+  String get ppNoResultsHint =>
+      'Start decoding to capture automotive key fob signals';
+
+  @override
+  String get ppListeningHint => 'Press your key fob near the antenna...';
+
+  @override
+  String ppSignalsAnalyzed(int count) {
+    return '$count signals analyzed';
+  }
+
+  @override
+  String get ppProtocol => 'Protocol';
+
+  @override
+  String get ppSerial => 'Serial';
+
+  @override
+  String get ppButton => 'Button';
+
+  @override
+  String get ppCounter => 'Counter';
+
+  @override
+  String get ppData => 'Data';
+
+  @override
+  String get ppEncrypted => 'ENC';
+
+  @override
+  String get ppCrcValid => 'CRC ✓';
+
+  @override
+  String get ppCrcInvalid => 'CRC ✗';
+
+  @override
+  String ppResultCount(int count) {
+    return '$count signals decoded';
+  }
+
+  @override
+  String ppDecodingOn(int module, String freq) {
+    return 'Decoding on module $module at $freq MHz';
+  }
+
+  @override
+  String ppStarted(int module) {
+    return 'ProtoPirate started on module $module';
+  }
+
+  @override
+  String get ppStopped => 'ProtoPirate stopped';
+
+  @override
+  String get ppHistoryCleared => 'History cleared';
+
+  @override
+  String ppError(String error) {
+    return 'ProtoPirate error: $error';
+  }
 }

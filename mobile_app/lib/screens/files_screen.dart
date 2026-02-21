@@ -84,7 +84,19 @@ class _FilesScreenState extends State<FilesScreen> {
       );
     }
 
-        return Scaffold(
+        // Intercept Android back button: navigate up when inside a
+        // subdirectory instead of popping the entire screen.
+        final bool isInSubdir = bleProvider.currentPath != '/' &&
+            bleProvider.currentPath.isNotEmpty;
+
+        return PopScope(
+          canPop: !isInSubdir,
+          onPopInvokedWithResult: (didPop, result) {
+            if (!didPop) {
+              bleProvider.navigateUp();
+            }
+          },
+          child: Scaffold(
           body: SafeArea(
             child: Column(
       children: [
@@ -236,6 +248,7 @@ class _FilesScreenState extends State<FilesScreen> {
               ],
             ),
           ),
+        ),  // end PopScope
         );
       },
     );
@@ -672,10 +685,14 @@ class _FilesScreenState extends State<FilesScreen> {
           fullPath = '${bleProvider.currentPath}/${file.name}';
         }
         
-        await bleProvider.deleteFile(fullPath);
+        final success = await bleProvider.deleteFile(fullPath);
         if (context.mounted) {
           final l10n = AppLocalizations.of(context)!;
-          _showSuccessSnackBar(file.isDirectory ? l10n.directoryDeleted(file.name) : l10n.fileDeleted(file.name));
+          if (success) {
+            _showSuccessSnackBar(file.isDirectory ? l10n.directoryDeleted(file.name) : l10n.fileDeleted(file.name));
+          } else {
+            _showErrorSnackBar(l10n.deleteFailed('File not found or delete failed'));
+          }
           await bleProvider.refreshFileList(forceRefresh: true);
         }
       } catch (e) {

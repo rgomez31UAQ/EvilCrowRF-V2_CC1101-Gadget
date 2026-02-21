@@ -97,6 +97,9 @@ class FirmwareBinaryProtocol {
   static const int MSG_NRF_CLEAR_TARGETS = 0x2E;
   static const int MSG_NRF_STOP_ALL     = 0x2F;
 
+  // ── ProtoPirate Commands (0x60) ─────────────────────────────
+  static const int MSG_PROTOPIRATE = 0x60;
+
   // ── SDR Commands (0x50-0x59) ────────────────────────────────
   static const int MSG_SDR_ENABLE       = 0x50;
   static const int MSG_SDR_DISABLE      = 0x51;
@@ -1179,5 +1182,178 @@ class FirmwareBinaryProtocol {
   static Uint8List createFormatSDCommand() {
     final payload = Uint8List.fromList([0x46, 0x53]); // 'F', 'S'
     return _createEnhancedCommand(MSG_FORMAT_SD, payload);
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  ProtoPirate Command Factories
+  // ═══════════════════════════════════════════════════════════
+
+  /// Start ProtoPirate decode (0x60 sub 0x01)
+  /// Payload: [0x01][module:1][freqHz:4LE]
+  /// NOTE: Firmware remains backward compatible with the legacy uint16 (MHz*100).
+  static Uint8List createPPStartDecodeCommand(int module, double frequencyMhz) {
+    final int freqHz = (frequencyMhz * 1000000.0).round().clamp(0, 0xFFFFFFFF);
+    final payload = Uint8List(6);
+    payload[0] = 0x01; // Sub-command: start
+    payload[1] = module;
+    payload[2] = freqHz & 0xFF;
+    payload[3] = (freqHz >> 8) & 0xFF;
+    payload[4] = (freqHz >> 16) & 0xFF;
+    payload[5] = (freqHz >> 24) & 0xFF;
+    return _createEnhancedCommand(MSG_PROTOPIRATE, payload);
+  }
+
+  /// Stop ProtoPirate decode (0x60 sub 0x02)
+  static Uint8List createPPStopDecodeCommand() {
+    final payload = Uint8List.fromList([0x02]);
+    return _createEnhancedCommand(MSG_PROTOPIRATE, payload);
+  }
+
+  /// Get ProtoPirate history count (0x60 sub 0x03)
+  static Uint8List createPPGetHistoryCountCommand() {
+    final payload = Uint8List.fromList([0x03]);
+    return _createEnhancedCommand(MSG_PROTOPIRATE, payload);
+  }
+
+  /// Get ProtoPirate history entry (0x60 sub 0x04)
+  static Uint8List createPPGetHistoryEntryCommand(int index) {
+    final payload = Uint8List.fromList([0x04, index & 0xFF]);
+    return _createEnhancedCommand(MSG_PROTOPIRATE, payload);
+  }
+
+  /// Clear ProtoPirate history (0x60 sub 0x05)
+  static Uint8List createPPClearHistoryCommand() {
+    final payload = Uint8List.fromList([0x05]);
+    return _createEnhancedCommand(MSG_PROTOPIRATE, payload);
+  }
+
+  /// Get ProtoPirate status (0x60 sub 0x06)
+  static Uint8List createPPGetStatusCommand() {
+    final payload = Uint8List.fromList([0x06]);
+    return _createEnhancedCommand(MSG_PROTOPIRATE, payload);
+  }
+
+  /// Load .sub file for ProtoPirate analysis (0x60 sub 0x07)
+  /// Payload: [0x07][pathLen:1][path...]
+  static Uint8List createPPLoadSubFileCommand(String filePath) {
+    final pathBytes = utf8.encode(filePath);
+    final pathLen = pathBytes.length.clamp(0, 127);
+    final payload = Uint8List(2 + pathLen);
+    payload[0] = 0x07; // Sub-command: load sub file
+    payload[1] = pathLen;
+    payload.setRange(2, 2 + pathLen, pathBytes);
+    return _createEnhancedCommand(MSG_PROTOPIRATE, payload);
+  }
+
+  /// List .sub files on SD card (0x60 sub 0x08)
+  /// Payload: [0x08][pathLen:1][path...]
+  static Uint8List createPPListSubFilesCommand([String path = '/']) {
+    final pathBytes = utf8.encode(path);
+    final pathLen = pathBytes.length.clamp(0, 127);
+    final payload = Uint8List(2 + pathLen);
+    payload[0] = 0x08;
+    payload[1] = pathLen;
+    payload.setRange(2, 2 + pathLen, pathBytes);
+    return _createEnhancedCommand(MSG_PROTOPIRATE, payload);
+  }
+
+  /// Emulate (TX) a decoded ProtoPirate signal (0x60 sub 0x09)
+  /// Payload: [0x09][module:1][repeat:1][nameLen:1][name...]
+  ///          [data:8LE][data2:8LE][serial:4LE][btn:1][cnt:4LE][bits:1][freq_hz:4LE]
+  static Uint8List createPPEmulateCommand({
+    required int module,
+    required int repeat,
+    required String protocolName,
+    required int data,
+    required int data2,
+    required int serial,
+    required int button,
+    required int counter,
+    required int dataBits,
+    required double frequencyMhz,
+  }) {
+    final nameBytes = utf8.encode(protocolName);
+    final nameLen = nameBytes.length.clamp(0, 31);
+    // 1(sub) + 1(mod) + 1(rep) + 1(nameLen) + nameLen + 8+8+4+1+4+1+4 = 34 + nameLen
+    final payload = Uint8List(34 + nameLen);
+    int off = 0;
+    payload[off++] = 0x09;
+    payload[off++] = module;
+    payload[off++] = repeat;
+    payload[off++] = nameLen;
+    payload.setRange(off, off + nameLen, nameBytes);
+    off += nameLen;
+    // data: 8 bytes LE
+    for (int i = 0; i < 8; i++) {
+      payload[off++] = (data >> (i * 8)) & 0xFF;
+    }
+    // data2: 8 bytes LE
+    for (int i = 0; i < 8; i++) {
+      payload[off++] = (data2 >> (i * 8)) & 0xFF;
+    }
+    // serial: 4 bytes LE
+    for (int i = 0; i < 4; i++) {
+      payload[off++] = (serial >> (i * 8)) & 0xFF;
+    }
+    payload[off++] = button;
+    // counter: 4 bytes LE
+    for (int i = 0; i < 4; i++) {
+      payload[off++] = (counter >> (i * 8)) & 0xFF;
+    }
+    payload[off++] = dataBits;
+    // freq_hz: 4 bytes LE
+    int freqHz = (frequencyMhz * 1000000).round();
+    for (int i = 0; i < 4; i++) {
+      payload[off++] = (freqHz >> (i * 8)) & 0xFF;
+    }
+    return _createEnhancedCommand(MSG_PROTOPIRATE, payload);
+  }
+
+  /// Save a decoded capture to SD card (0x60 sub 0x0A)
+  /// Same data layout as emulate but without module/repeat
+  static Uint8List createPPSaveCaptureCommand({
+    required String protocolName,
+    required int data,
+    required int data2,
+    required int serial,
+    required int button,
+    required int counter,
+    required int dataBits,
+    required double frequencyMhz,
+  }) {
+    final nameBytes = utf8.encode(protocolName);
+    final nameLen = nameBytes.length.clamp(0, 31);
+    // 1(sub) + 1(nameLen) + nameLen + 8+8+4+1+4+1+4 = 32 + nameLen
+    final payload = Uint8List(32 + nameLen);
+    int off = 0;
+    payload[off++] = 0x0A;
+    payload[off++] = nameLen;
+    payload.setRange(off, off + nameLen, nameBytes);
+    off += nameLen;
+    for (int i = 0; i < 8; i++) {
+      payload[off++] = (data >> (i * 8)) & 0xFF;
+    }
+    for (int i = 0; i < 8; i++) {
+      payload[off++] = (data2 >> (i * 8)) & 0xFF;
+    }
+    for (int i = 0; i < 4; i++) {
+      payload[off++] = (serial >> (i * 8)) & 0xFF;
+    }
+    payload[off++] = button;
+    for (int i = 0; i < 4; i++) {
+      payload[off++] = (counter >> (i * 8)) & 0xFF;
+    }
+    payload[off++] = dataBits;
+    int freqHz = (frequencyMhz * 1000000).round();
+    for (int i = 0; i < 4; i++) {
+      payload[off++] = (freqHz >> (i * 8)) & 0xFF;
+    }
+    return _createEnhancedCommand(MSG_PROTOPIRATE, payload);
+  }
+
+  /// List saved ProtoPirate captures (0x60 sub 0x0B)
+  static Uint8List createPPListSavedCommand() {
+    final payload = Uint8List.fromList([0x0B]);
+    return _createEnhancedCommand(MSG_PROTOPIRATE, payload);
   }
 }

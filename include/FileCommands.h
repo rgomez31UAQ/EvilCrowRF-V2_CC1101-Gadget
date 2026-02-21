@@ -112,21 +112,36 @@ private:
         if (pathLen > 0) {
                 // Check whether the path is root
             if (pathLen != 1 || relativePath[0] != '/') {
-                buffer.append("/");
-                
-                // Remove leading slash if present
-                if (relativePath[0] == '/') {
-                    buffer.append(relativePath + 1, pathLen - 1);
-                } else {
-                    buffer.append(relativePath, pathLen);
+                // Strip leading slash from relativePath to avoid double slash
+                const char* p = relativePath;
+                size_t pLen = pathLen;
+                if (p[0] == '/') {
+                    p++;
+                    pLen--;
+                }
+
+                // Add separator only if buffer doesn't already end with '/'
+                size_t bufSz = buffer.size();
+                if (bufSz > 0 && buffer.c_str()[bufSz - 1] != '/') {
+                    buffer.append("/");
+                }
+
+                if (pLen > 0) {
+                    buffer.append(p, pLen);
                 }
             } else {
-                // Root path "/" - add trailing slash for directory
-                buffer.append("/");
+                // Root path "/" - ensure trailing slash for directory
+                size_t bufSz = buffer.size();
+                if (bufSz == 0 || buffer.c_str()[bufSz - 1] != '/') {
+                    buffer.append("/");
+                }
             }
         } else {
-            // Empty path - add trailing slash for root directory
-            buffer.append("/");
+            // Empty path - ensure trailing slash for root directory
+            size_t bufSz = buffer.size();
+            if (bufSz == 0 || buffer.c_str()[bufSz - 1] != '/') {
+                buffer.append("/");
+            }
         }
     }
     
@@ -709,6 +724,15 @@ public:
         
         size_t fileSize = file.size();
         ESP_LOGI("FileCommands", "Streaming file: %zu bytes", fileSize);
+
+        // Guard: keep file streaming small and predictable for BLE.
+        // App requirement: support loading up to 10 KB.
+        static const size_t MAX_STREAM_FILE_SIZE = 10 * 1024;
+        if (fileSize > MAX_STREAM_FILE_SIZE) {
+            file.close();
+            sendBinaryFileActionResult(7, false, 16, pathBuffer.c_str()); // 16=file too large
+            return true;
+        }
         
         // Build header: [0xA0][pathLen:1][path][fileSize:4]
         size_t fullPathLen = strlen(pathBuffer.c_str());
@@ -916,10 +940,11 @@ public:
             "/DATA/RECORDS",
             "/DATA/SIGNALS",
             "/DATA/PRESETS",
-            "/DATA/TEMP"
+            "/DATA/TEMP",
+            "/DATA/PROTOPIRATE"
         };
         bool creationSuccess = true;
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 6; i++) {
             char progressMsg[280];
             snprintf(progressMsg, sizeof(progressMsg), "Creating: %s", defaultDirs[i]);
             sendBinaryFileActionResult(8, true, 0xFF, progressMsg);

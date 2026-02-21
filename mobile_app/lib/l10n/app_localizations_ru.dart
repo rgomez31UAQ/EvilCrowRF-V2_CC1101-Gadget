@@ -2109,4 +2109,99 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get chargingIndicator => ' ⚡ Зарядка';
+
+  @override
+  String get protoPirate => 'ProtoPirate';
+
+  @override
+  String get ppStartDecode => 'Начать декодирование';
+
+  @override
+  String get ppStopDecode => 'Остановить';
+
+  @override
+  String get ppDecoding => 'Декодирование…';
+
+  @override
+  String get ppIdle => 'Ожидание';
+
+  @override
+  String get ppFrequency => 'Частота';
+
+  @override
+  String get ppModule => 'Модуль';
+
+  @override
+  String get ppHistory => 'История';
+
+  @override
+  String get ppClearHistory => 'Очистить историю';
+
+  @override
+  String get ppClearResults => 'Очистить результаты';
+
+  @override
+  String get ppNoResults => 'Ещё нет декодированных сигналов';
+
+  @override
+  String get ppNoResultsHint =>
+      'Начните декодирование для захвата сигналов автомобильных брелоков';
+
+  @override
+  String get ppListeningHint => 'Нажмите кнопку брелока рядом с антенной...';
+
+  @override
+  String ppSignalsAnalyzed(int count) {
+    return '$count сигналов проанализировано';
+  }
+
+  @override
+  String get ppProtocol => 'Протокол';
+
+  @override
+  String get ppSerial => 'Серийный';
+
+  @override
+  String get ppButton => 'Кнопка';
+
+  @override
+  String get ppCounter => 'Счётчик';
+
+  @override
+  String get ppData => 'Данные';
+
+  @override
+  String get ppEncrypted => 'ШФР';
+
+  @override
+  String get ppCrcValid => 'CRC ✓';
+
+  @override
+  String get ppCrcInvalid => 'CRC ✗';
+
+  @override
+  String ppResultCount(int count) {
+    return '$count сигналов декодировано';
+  }
+
+  @override
+  String ppDecodingOn(int module, String freq) {
+    return 'Декодирование на модуле $module на $freq МГц';
+  }
+
+  @override
+  String ppStarted(int module) {
+    return 'ProtoPirate запущен на модуле $module';
+  }
+
+  @override
+  String get ppStopped => 'ProtoPirate остановлен';
+
+  @override
+  String get ppHistoryCleared => 'История очищена';
+
+  @override
+  String ppError(String error) {
+    return 'Ошибка ProtoPirate: $error';
+  }
 }
